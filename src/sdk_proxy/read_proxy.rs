@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use crossbeam_channel::{unbounded, Receiver};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use crate::sdk_proxy::proxy::IdTransform;
 use crate::serialization::command::Command;
 use crate::serialization::packet::Packet;
@@ -13,9 +13,10 @@ pub fn generate_read_sdk_proxy(
     to_read: Receiver<Packet>,
     packets_to_watch: Arc<Mutex<Vec<IdTransform>>>,
     running: &'static AtomicBool,
-) -> (Receiver<Packet>, Receiver<Packet>) {
+) -> (Receiver<Packet>, Receiver<Packet>, Sender<Packet>) {
     let (regular_read_sender, regular_read_receiver) = unbounded::<Packet>();
     let (ftcsdk_read_sender, ftcsdk_read_receiver) = unbounded::<Packet>();
+    let sdk_receive_input = ftcsdk_read_sender.clone();
     thread::spawn(move || {
         let mut first = true;
         let mut first_packet = None;
@@ -78,5 +79,5 @@ pub fn generate_read_sdk_proxy(
             }
         }
     });
-    (regular_read_receiver, ftcsdk_read_receiver)
+    (regular_read_receiver, ftcsdk_read_receiver, sdk_receive_input)
 }

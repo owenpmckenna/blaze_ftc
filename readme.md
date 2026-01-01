@@ -31,11 +31,19 @@ are non-blocking and backed by crossbeam channels (which affords immutable globa
 The problem of needing cross-handler mutable state is solved with a global "main" thread, tasked with giving targets to the handlers, and receiving messages ("state updates") from the handlers.
 Both the targets and updates are generic types, and the updates must be an enum type. State updates are effectively stored in a map, with the keys being the enum's discriminant (think: Some vs None, with what Some contains being ignored). This allows different handlers to submit state information separately, with the enum instance's contents being updated in the main thread's view of state.
 
-Currently, there are 4 places to have code executed:
+Currently, there are 5 places to have code executed:
 1. Gamepad handler: gamepads are considered hardware devices. Ergo, you can create handlers for them. I'm considering reworking this due to the immutable state requirements, but if you want to change targets from a gp handler, just send the target struct in a state update to be reflected back as is shown in the mecanum_with_brakes example.
 2. Bulk read handler: this is currently the only robot hw read available (see roadmap) and it's pretty self-explanatory. Note: you shouldn't do heavy computation here because it's run every 1-3 ms. 
-3. Main thread: this thread is designed to block waiting for a certain state to be reached (eg. flywheel is up to speed), before sending out new targets (servo lifted). It is explicitly designed for autonomous opmodes, which is why we also have:
-4. Update processors. These run before the main thread sees new state information, and can be used to react to state while the main thread is blocking. It can be used in teleops as well, to communicate Gamepad state to bulk read handlers or anything else you want to do.
+3. Packet interceptor: the basis for the Neutrino proxy, these handlers are called whenever a packet is sent to hw by the sdk. They can mutate or consume packets, send fake responses, and run in the same context as the other handlers. They are also useful for debugging.
+4. Main thread: this thread is designed to block waiting for a certain state to be reached (eg. flywheel is up to speed), before sending out new targets (servo lifted). It is explicitly designed for autonomous opmodes, which is why we also have:
+5. Update processors. These run before the main thread sees new state information, and can be used to react to state while the main thread is blocking. It can be used in teleops as well, to communicate Gamepad state to bulk read handlers or anything else you want to do.
+
+### Neutrino Proxy
+
+The "Neutrino Proxy" is an extension to BlazeFTC that is capable of drastically improving the performance of Java/Kotlin code. It does this by taking advantage of BlazeFTC's ability to proxy commands from the SDK on to the hardware while simultaneously running Rust code.
+Here, it intercepts commands and immediately gives the SDK an ACK message every time it sees a motor set power command, passing on the real command to hardware. This allows your JVM code to run much faster, without having to write any Rust code. It can be found in the Quickstart, which provides
+instructions on its use. Because of the total divorcing of the SDK from the hardware, this actually allows proxied code to run faster than was possible with Photon (this extension's namesake) as I understand it (let me know if I'm wrong), with a basic mecanum opmode running in ~0.5 ms, and it is fully compatible with the latest versions of the FTC SDK. 
+It still needs to be tested against Expansion Hubs. See Roadmap. Note that Neutrino is not considered the goal of BlazeFTC, but it was useful and relatively trivial to implement so I did so anyway.
 
 ### Roadmap
 

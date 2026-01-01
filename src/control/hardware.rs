@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::cmp::PartialEq;
-use std::sync::atomic::{AtomicI16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI16, Ordering};
+use std::sync::OnceLock;
 use crossbeam_channel::Sender;
 use crate::control::hardware::Direction::Backwards;
 use crate::serialization::command::Command::LynxCommand;
@@ -10,6 +11,9 @@ use crate::serialization::lynx_commands::base_lynx_command::LynxCommandData;
 use crate::serialization::lynx_commands::lynx_commands::{LynxGetBulkDataCommandData, LynxGetBulkDataResponseData, LynxSetMotorPowerCommandData, LynxSetServoPositionCommandData};
 use crate::serialization::packet::Packet;
 
+///this should be on by default, it represents whether we do motor power caching or not.
+/// it should only be turned off for debugging purposes, where you want to test worst-case timing
+pub static DO_MOTOR_CACHING: AtomicBool = AtomicBool::new(true);
 type Data = LynxGetBulkDataResponseData;
 pub struct LynxHub {
     pub module: Module,
@@ -74,7 +78,9 @@ impl LynxHub {
         }
         let calculated = (power * (i16::MAX as f32)) as i16;
         if self.last_motor_powers[motor as usize].swap(calculated, Ordering::SeqCst) == calculated {
-            return;//don't need to send this it's literally the same value!
+            if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
+                return; //don't need to send this it's literally the same value!
+            }
         }
         let lynx_command = LynxSetMotorPowerCommand(LynxSetMotorPowerCommandData { motor, power: calculated});
         let packet = Packet::new(lynx_command.to_command(&self.module), self.module.module_addr, 0);

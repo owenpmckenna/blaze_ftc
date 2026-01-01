@@ -36,7 +36,7 @@ impl CommandData for UnknownData {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AckData {
-    attention_required: bool, //did *not* know this was here at first
+    pub attention_required: bool, //did *not* know this was here at first
 }
 impl Display for AckData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

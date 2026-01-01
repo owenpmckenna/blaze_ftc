@@ -47,9 +47,11 @@ impl Packet {
             checksum: 0,
         }
     }
+
     pub fn new(command: Command, dest_module_addr: u8, message_number: u8) -> Self {
-        let src_module_addr = 0u8; //don't see it set to anything else so...
-        let reference_number = 0u8;
+        Self::new_full(command, dest_module_addr, 0, 0, message_number)
+    }
+    pub fn new_full(command: Command, dest_module_addr: u8, src_module_addr: u8, reference_number: u8, message_number: u8) -> Self {
         let packet_id = command.to_packet_id();
         let packet_length = (11 + command.get_bytes_len()) as u16;
         let mut packet = Packet {

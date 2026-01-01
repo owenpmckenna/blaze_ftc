@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 use arc_swap::ArcSwap;
 use crossbeam_channel::{Sender, Receiver, select, unbounded};
-use crate::{catch, RUNNING};
+use crate::{catch, PROXY, RUNNING};
 use crate::control::gamepad::Gamepad;
 use crate::control::hardware::LynxHub;
 use crate::serialization::command::Command::Ack;
@@ -34,6 +34,7 @@ pub struct Robot<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + R
     state_updater: Option<Sender<StateUpdate>>,
     init_update_processors: Vec<fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()>,
     main_thread_func: Option<fn(&mut MainThread<Target, StateUpdate>) -> ()>,
+    proxy_interceptors_init: Option<Vec<Box<dyn SdkPacketHandler<Target, StateUpdate>>>>,
     running: &'static AtomicBool
 }
 impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static,
@@ -60,37 +61,56 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: Send + Unwind
             state_updater: None,
             init_update_processors: vec![],
             main_thread_func: None,
+            proxy_interceptors_init: Some(vec![]),
             running
         }
     }
     pub fn init(mut self) {
+        //create the channels that will be used to send data between main thread and other threads
         let (s_tx, s_rx) = unbounded();
         let (t_tx, t_rx) = unbounded();
         self.state_updater = Some(s_tx);
         self.target_receiver = Some(t_rx);
+
+        //grab the initializer function that the user provided. they will give us the handlers when we call this
         let init = self.initializer.expect("no initializer found");
         self.initializer = None;
         log::info!("running init function");
         let default = init(&mut self);
         log::info!("ran init function");
-        self.set_target(default.clone());
+        self.set_target(default.clone());//make sure we have a target set always, so we don't have to use Option<>
+
+        //grab the things the main thread will need later, before we create the Arc which consumes this type
         let processors = self.init_update_processors;
         self.init_update_processors = vec![];
         let running = self.running;
         let func = self.main_thread_func.take();
         let later_telemetry = self.telemetry.clone();
+
+        //grab the interceptors, create the Arc<Robot> so multiple threads can use self, send interceptors to proxy
+        let taken_proxy_interceptors = self.proxy_interceptors_init.take().unwrap();
+        let arc_self = Arc::new(self);
+        let proxy = PROXY.get().unwrap();
+        taken_proxy_interceptors
+            .into_iter().map(|x| Box::new(InterceptorData::new(x, arc_self.clone())))
+            .for_each(|x| proxy.add_interceptor(x));
+
+        //start the main thread. later this may be a threadpool. idk.
         thread::spawn(move || {
             catch(move || {
-                while self.running.load(Ordering::SeqCst) {
-                    self.run()
+                let robot = arc_self;
+                while robot.running.load(Ordering::SeqCst) {
+                    robot.run()
                 }
             }, "main robot thread")
         });
+        //spawn MainThread. note that it *does not* have Robot access, which is intentional.
+        //hardware things should be handled in hardware threads.
         thread::spawn(move || {
             catch(move || {
                 MainThread::new(default, t_tx, s_rx, func, later_telemetry, processors, running)
                     .run();
-            }, "robot control thread");
+            },"robot control thread");
         });
     }
     fn run(&self) {
@@ -194,6 +214,10 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: Send + Unwind
                 panic!("ERROR DURING FUNCTION: {}", &err);
             }
         }
+    }
+    pub fn add_proxy_interceptor<D>(&mut self, func: D) where D: SdkPacketHandler<Target, StateUpdate> + 'static {
+        let list = self.proxy_interceptors_init.as_mut().unwrap();
+        list.push(Box::new(func));
     }
 }
 pub trait GamepadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
@@ -333,5 +357,36 @@ impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: Send + U
             }
         }
         None
+    }
+}
+pub(crate) trait Interceptor: Send + Sync + RefUnwindSafe {
+    fn intercept(&mut self, pack: Packet, send: &Sender<Packet>) -> Option<Packet>;
+}
+struct InterceptorData<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+    func: Box<dyn SdkPacketHandler<Target, StateUpdate>>,
+    robot: Arc<Robot<Target, StateUpdate>>
+}
+impl<Target, StateUpdate> Interceptor for InterceptorData<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+    fn intercept(&mut self, pack: Packet, send: &Sender<Packet>) -> Option<Packet> {
+        self.func.handle_packet(self.robot.as_ref(), pack, send)
+    }
+}
+impl<'a, Target, StateUpdate> InterceptorData<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+    fn new(func: Box<dyn SdkPacketHandler<Target, StateUpdate>>, robot: Arc<Robot<Target, StateUpdate>>) -> InterceptorData<Target, StateUpdate> {
+        InterceptorData {func, robot}
+    }
+}
+
+pub trait SdkPacketHandler<Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+    fn handle_packet(&mut self, robot: &Robot<Target, StateUpdate>, packet: Packet, to_reader: &Sender<Packet>) -> Option<Packet>;
+    //msgnum = refnum
+    fn try_get_sender<'a>(&self, robot: &'a Robot<Target, StateUpdate>, addr: u8) -> Option<&'a Sender<Packet>> {
+        if robot.hub_0.module.module_addr == addr {
+            Some(&robot.hub_0.sender)
+        } else if let Some(hub) = robot.hub_1.as_ref() {
+            if hub.module.module_addr == addr {
+                Some(&robot.hub_1.as_ref()?.sender)
+            } else {None}
+        } else {None}
     }
 }

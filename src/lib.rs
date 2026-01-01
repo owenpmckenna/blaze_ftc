@@ -344,7 +344,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_gamepad(
     catch(|| {
         let jba0: jbyteArray = gp1.into_inner();
         let bytes0 = env.convert_byte_array(jba0).unwrap();
-        let jba1: jbyteArray = gp1.into_inner();
+        let jba1: jbyteArray = gp2.into_inner();//thanks @AS1624
         let bytes1 = env.convert_byte_array(jba1).unwrap();
         let channel = GAMEPAD_CHANNELS.get().unwrap();
         channel.0.send((bytes0, bytes1)).unwrap();

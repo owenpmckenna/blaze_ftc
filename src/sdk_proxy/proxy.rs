@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::Duration;
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use crate::control::robot::{Interceptor, Robot};
 use crate::sdk_proxy::read_proxy::generate_read_sdk_proxy;
 use crate::sdk_proxy::send_proxy::generate_write_sdk_proxy;
 use crate::serialization::packet::Packet;
@@ -17,22 +18,33 @@ pub struct Proxy {
      * This is the channel that the sdk should read from
      */
     sdk_receive: Receiver<Packet>,
+    /**
+     * this sends to sdk_receive. have fun!
+     */
+    sdk_receive_input: Sender<Packet>,
     sdk_buffer: (Sender<u8>, Receiver<u8>),
     sdk_has_received: AtomicBool,
-    ftc_packets: Arc<Mutex<Vec<IdTransform>>>
+    ftc_packets: Arc<Mutex<Vec<IdTransform>>>,
+    /**
+     * these are called for input packets. They can return None to stop a packet. They can also
+     * return mutated packets
+     */
+    interceptors: Mutex<Vec<Box<dyn Interceptor>>>
 }
 impl Proxy {
     pub fn new(direct_send: Sender<Packet>, direct_receive: Receiver<Packet>, running: &'static AtomicBool) -> (Sender<Packet>, Receiver<Packet>, Proxy) {
         let ftc_packets = Arc::new(Mutex::new(vec![]));
         let (send, sdk_send) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running);
-        let (receive, sdk_receive) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running);
+        let (receive, sdk_receive, sdk_receive_input) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running);
         (send, receive, Proxy {
             running,
             sdk_send,
             sdk_receive,
+            sdk_receive_input,
             sdk_buffer: unbounded(),
             sdk_has_received: AtomicBool::new(false),
             ftc_packets,
+            interceptors: Mutex::new(vec![])
         })
     }
     pub fn write(&self, data: Vec<u8>) {
@@ -43,7 +55,17 @@ impl Proxy {
             }
             Some(it) => {
                 log::trace!("data from java received! ref num:{}", it.0.reference_number);
-                self.sdk_send.send(it.0).unwrap();
+                let mut lock = self.interceptors.lock().unwrap();
+                let mut packet = Some(it.0);
+                for interceptor in lock.iter_mut() {
+                    if let Some(pack) = packet {
+                        //this may return None and swallow the packet
+                        packet = interceptor.intercept(pack, &self.sdk_receive_input);
+                    } else { return; }
+                }
+                if let Some(pack) = packet {
+                    self.sdk_send.send(pack).unwrap();
+                }
             }
         }
     }
@@ -101,6 +123,9 @@ impl Proxy {
         }
 
         temp
+    }
+    pub fn add_interceptor(&self, interceptor: Box<dyn Interceptor>) {
+        self.interceptors.lock().unwrap().push(interceptor);
     }
 }
 #[derive(Clone)]
