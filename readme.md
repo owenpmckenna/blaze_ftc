@@ -1,18 +1,19 @@
 # BlazeFTC
 
-BlazeFTC is a (partial) Rust rewrite of the binary protocol used by the Rev Control and Expansion Hub in the First Tech Challenge, a high school robotics competition. 
-Designed for speed, it offers the fastest possible loop times, thanks to it's direct hardware control, faster programming language, and "reactive" design.
+BlazeFTC is a (partial) Rust rewrite of the binary protocol used by the REV Robotics Control Hub and Expansion Hub used in *FIRST®* Tech Challenge, a high school robotics competition. 
+Designed for speed, it offers the fastest possible loop times, thanks to it's direct hardware control, faster programming language, and "reactive" design. 
 It is capable of running in the context of a regular opmode, and it maintains compatibility with the FTC SDK, which can still issue commands while the BlazeFTC opmode is running.
-As of now, it should be considered to be in pre-alpha. Most of the code is there, but there's some bugs and design choices I would like input on, among other things. Actionable suggestions/pull requests are appreciated.
 
-The quickstart can be found [here](https://github.com/owenpmckenna/BlazeFtcQuickstart) but please read the explanations below before you start.
+**As of now, it should be considered to be in pre-alpha.** Most of the code is there, but there's some bugs and design choices I would like input on, among other things. Actionable suggestions/pull requests are appreciated.
+
+The quickstart can be found [here](https://github.com/owenpmckenna/BlazeFtcQuickstart), but please read the explanations below before you start.
 
 ### What's going on?
 
-When the BlazeFTC opmode is started, we use Java's reflection APIs to obtain references to the device file (`/dev/ttyS1`) that the Control Hub Android Board uses to communicate with the Lynx Module (the board with the motor drivers).
+When the BlazeFTC opmode is started, we use Java's reflection APIs to obtain references to the device file (`/dev/ttyS1`) that the Control Hub's compute board uses to communicate with the Lynx Module (the board with the motor drivers, servo drivers, sensor ports, etc).
 We replace it with a proxy Input/OutputStream, backed by JNI calls to our Rust code which allows the FTC SDK to continue communicating. We deserialize and reserialize all the frames, which is how the protocol was reverse engineered and tested in the first place.
 
-IO in the normal SDK is, from a fundamental level, blocking. Directly controlling the hardware allows us to throw that out the window, and send commands at speeds apparently limited only by the UART baud rate.
+In the normal SDK, IO is fundamentally blocking. Directly controlling the hardware allows us to throw that out the window, and send commands at speeds apparently limited only by the UART baud rate.
 In testing, an opmode with 4 motor PID loops was running at ~500hz, just to give an idea of the speed we can accomplish here.
 
 ### Ok, but why?
@@ -41,21 +42,22 @@ Currently, there are 5 places to have code executed:
 ### Neutrino Proxy
 
 The "Neutrino Proxy" is an extension to BlazeFTC that is capable of drastically improving the performance of Java/Kotlin code. It does this by taking advantage of BlazeFTC's ability to proxy commands from the SDK on to the hardware while simultaneously running Rust code.
-Here, it intercepts commands and immediately gives the SDK an ACK message every time it sees a motor set power command, passing on the real command to hardware. This allows your JVM code to run much faster, without having to write any Rust code. It can be found in the Quickstart, which provides
-instructions on its use. Because of the total divorcing of the SDK from the hardware, this actually allows proxied code to run faster than was possible with Photon (this extension's namesake) as I understand it (let me know if I'm wrong), with a basic mecanum opmode running in ~0.5 ms, and it is fully compatible with the latest versions of the FTC SDK. 
+
+Here, it intercepts commands and immediately gives the SDK an ACK message every time it sees a motor set power command, passing on the real command to hardware. This allows your JVM code to run much faster, without having to write any Rust code. It can be found in the Quickstart, which provides instructions on its use. Because of the total divorcing of the SDK from the hardware, this actually allows proxied code to run faster than was possible with Photon (this extension's namesake) as I understand it (let me know if I'm wrong), with a basic mecanum opmode running in ~0.5 ms, and it is fully compatible with the latest versions of the FTC SDK.
+
 It still needs to be tested against Expansion Hubs. See Roadmap. Note that Neutrino is not considered the goal of BlazeFTC, but it was useful and relatively trivial to implement so I did so anyway.
 
 ### Roadmap
 
-BlazeFTC should be considered to be in pre-alpha. It *works* but it's missing some features. That's partially because I only have a test robot with me, and it does not have such features as an expansion hub, servos, or pinpoint imu. 
-That's also because, at the time of writing, I literally first thought of this about 10 days ago (~Dec 10th for those at home), and I haven't had time to do everything with such a tight turnaround.
+BlazeFTC should be considered to be in pre-alpha. It *works* but it's missing some features. That's partially because I only have a test robot with me, and it does not have such features as an Expansion Hub, servos, or I2C devices (such as the Pinpoint). 
+That's also because, at the time of writing, I literally first thought of this about 10 days ago at the time of writing this (~Dec 10th for those at home), and I haven't had time to do everything with such a tight turnaround.
 
-Anyway, in no particular order, several things need to be implemented/tested:
+Anyways, in no particular order, several things need to be implemented/tested:
 + Expansion Hub. The code is there, I'm like, 70% confident it will work. If someone could test it that'd be great.
 + Servos. These are controlled by PWM and different servos seem to want different ranges. The code is there for the default case, I have no idea of it will work or not. I'm like, 20% confident these will work so I personally wouldn't touch them. If you would like to help me implement them, that would be much appreciated.
-+ I2C. Pinpoints in particular. I have not written the code for this.
++ I2C. The Pinpoint in particular. I have not written the code for this.
 + Pathing. For obvious reasons, JVM pathing libraries cannot be used (I mean, they could. But like... why even use this library then). BlazeFTC needs a builtin pathing library. While this is a high priority obviously, I am not the best equipped to create it and help would be appreciated in pretty much any form.
 + Configurables. Currently the only way to change runtime parameters (other than the opmode number) is by recompiling. I would like to integrate with Panels and/or acme dashboard, but for obvious reasons this is made difficult by the nature of the project. I need to be able to dynamically crate configurables at runtime, so go yell at Lazar until he adds the methods. /s
-+ Support for languages other than rust. It is possible to expose a C api from Rust, and pretty much every other language can communicate with a C api. It is conceivable that we could embed/serve an api to C, MicroPython, WASM (so JS, C#, Go, etc.), LUA, and a bunch of others. I'm not sure who would find that useful, but it is within the realm of possibility.
++ Support for languages other than rust. It is possible to expose a C API from Rust, and pretty much every other language can communicate with a C API. It is conceivable that we could embed/serve an API to C, MicroPython, WASM (so JS, C#, Go, etc.), Lua, and a bunch of others. I'm not sure who would find that useful, but it is within the realm of possibility.
 + There is a known bug where, apparently randomly, the FTC SDK fails to continue to communicate with the Lynx Module after BlazeFTC starts. It happens maybe 20% of the time, I expect it to be a small fix (it happens because the SDK read thread isn't locked when we take over. Probably.)
 + Graceful termination. Currently the robot restarts when you hit the stop button.
