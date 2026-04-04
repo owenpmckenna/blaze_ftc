@@ -1,15 +1,13 @@
-use crate::serialization::command::Command;
 use crate::serialization::packet::{FRAME_BYTES, Packet, bytes_equal};
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use log::log;
-use std::backtrace::Backtrace;
-use std::cmp::PartialEq;
-use std::io::{Error, Read};
+use std::io::Read;
 use std::panic::UnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::{panic, thread};
+use std::thread;
+use thread_priority::{get_current_thread_priority, set_current_thread_priority, ThreadPriority};
 use crate::catch;
+use crate::control::hardware::LynxHub;
+
 /**
  * FYI the port is generic because I was switching out serialport implementations a lot at the beginning
  * and wanted to stop having to fix other code when I tried something
@@ -20,7 +18,6 @@ where
 {
     let (tx, rx) = unbounded::<Packet>();
     thread::spawn(move || {
-        let port = port;
         catch(move || initial_read_thread(port, tx, running), "hw read thread");
     });
     rx
@@ -29,12 +26,24 @@ fn initial_read_thread<T>(mut port: T, send: Sender<Packet>, running: &AtomicBoo
 where
     T: Read + Send + UnwindSafe,
 {
+    {
+        let core_ids = core_affinity::get_core_ids().unwrap();
+        let worked = core_affinity::set_for_current(core_ids[0]);
+        log::info!("read thread just attempted to pin to core {}. return: {}", core_ids[0].id, worked);
+        log::info!("just set read thread priority: old: {:?} err: {:?}, new: {:?}",
+            get_current_thread_priority().expect("could not get thread priority read"),
+            set_current_thread_priority(ThreadPriority::Max),
+            get_current_thread_priority().expect("could not get thread priority read - 2"),
+        );
+    }
     let mut locked = false;
     let mut was_locked = locked;
+    let mut reading = vec![0u8; 128];//much larger than any packet we should receive
     while running.load(Ordering::SeqCst) {
-        log::trace!("initial read. locked:{}", locked);
+        //log::info!("initial read. locked:{}", locked);
         if !locked {
-            was_locked = locked;
+            was_locked = false;
+            //should only run once, at the start of the program
             locked = match attempt_lock(&mut port) {
                 Ok(it) => it,
                 Err(err) => {
@@ -44,44 +53,46 @@ where
             };
             continue;
         }
-        log::trace!("reading 2 bytes: {}", was_locked == locked);
-        let mut reading = vec![0u8, 0u8];
+        //log::info!("read 1 locked:{}", locked);
         if was_locked != locked {
-            //we just ran attempt_lock and consumed the frame bytes
-            reading.copy_from_slice(&FRAME_BYTES);
+            //we just ran attempt_lock and consumed the frame bytes. read the length only
+            reading[0..2].copy_from_slice(&FRAME_BYTES[0..2]);//0,1
+            port.read_exact(&mut reading[2..4]).expect("could not read packet header!");
         } else {
-            port.read_exact(reading.as_mut_slice()).unwrap(); //umm... no err handling for now
+            //read frames and also length
+            port.read_exact(&mut reading[0..4]).expect("could not read packet header!");
         }
-        if !bytes_equal(reading.as_ref(), &FRAME_BYTES) {
+        //log::info!("read 2");
+        if !bytes_equal(&reading[0..2], &FRAME_BYTES) {
             log::trace!("bytes not equal!");
             locked = false;
             continue;
         }
-        reading.resize(4, 0);
-        log::trace!("extending to 4 and then reading...");
-        port.read_exact(&mut reading.as_mut_slice()[2..4]).unwrap(); //2,3: the ones we just added
-        let num_to_read = u16::from_le_bytes(reading.as_slice()[2..4].try_into().unwrap());
-        log::trace!("reading {} bytes", num_to_read);
-        reading.resize(num_to_read as usize, 0);
+        //log::info!("read 3");
+        let num_to_read = u16::from_le_bytes(reading.as_slice()[2..4].try_into().expect("could not convert bytes type"));
+        //log::info!("reading {} bytes", num_to_read);
+        if reading.len() < num_to_read as usize {
+            reading.resize(num_to_read as usize, 0);
+        }
         //get slice from 4 to end, we have written to 0-3 already
         let slice = &mut reading.as_mut_slice()[4..num_to_read as usize];
-        port.read_exact(slice).unwrap();
+        port.read_exact(slice).expect("failed to read exact bytes of packet len");
+        //log::info!("read 4, creating packets");
         let packet = Packet::from_data(&reading);
-        log::trace!("-EVADEBUG- read bytes from lynx: {:?}", reading);
+        //log::trace!("-EVADEBUG- read bytes from lynx: {:?}", reading);
         match packet {
             None => {
-                log::info!("failed to read packet");
+                //log::info!("failed to read packet");
                 locked = false;
                 continue;
             }
-            Some((packet, _)) => {
-                log::trace!(
-                    "did read packet! ref num: {}, msg num:{}",
-                    packet.reference_number,
-                    packet.message_number
-                );
-                send.send(packet).unwrap();
-            } //we ignore the Vec<u8> it shouldn't matter
+            Some(packet) => {
+                if let Some(hub) = LynxHub::get_for_id_careful(packet.src_module_addr) {
+                    hub.notify_receive_packet();
+                }
+                log::trace!("did read packet! pack:{:?}",packet);
+                send.send(packet).expect("failed to send to channel!");
+            }
         }
         was_locked = locked;
     }

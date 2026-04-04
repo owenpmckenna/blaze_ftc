@@ -1,7 +1,9 @@
-use crate::serialization::commands::QueryInterfaceResponseData;
+use crate::serialization::commands::{QueryInterfaceData, QueryInterfaceResponseData};
 use crate::serialization::packet::Packet;
 use num_enum::TryFromPrimitive;
 use std::convert::Into;
+use crossbeam_channel::{Receiver, RecvError, Sender};
+use crate::serialization::command::Command;
 
 #[repr(u16)]
 #[derive(TryFromPrimitive, Copy, Clone, Debug, PartialEq, Eq)]
@@ -13,6 +15,13 @@ pub enum StandardCommands {
     FailSafe = 0b0111111100000101,
     SetNewModuleAddr = 0b0111111100000110,
     QueryInterface = 0b0111111100000111,
+    StartDownload = 0b0111111100001000,
+    DownloadChunk = 0b0111111100001001,
+    SetModuleLedColor = 0b0111111100001010,
+    GetModuleLedColor = 0b0111111100001011,
+    SetModuleLedPattern = 0b0111111100001100,
+    GetModuleLedPattern = 0b0111111100001101,
+    DebugLogLevel = 0b0111111100001110,
     Discovery = 0b0111111100001111,
 }
 
@@ -20,7 +29,7 @@ pub const FIRST: u16 = StandardCommands::ACK as u16;
 pub const LAST: u16 = StandardCommands::Discovery as u16;
 pub const RESPONSE_BIT: u16 = 0b1000000000000000;
 pub fn is_standard_command(pack_id: u16) -> bool {
-    pack_id > FIRST && pack_id < LAST
+    pack_id >= FIRST && pack_id <= LAST
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -81,6 +90,25 @@ impl Module {
         } else {
             Some(packet_id - self.number_command_first)
         }
+    }
+    fn try_get_packet(rec: &Receiver<Packet>) -> QueryInterfaceResponseData {
+        loop {
+            let data = match rec.recv() {
+                Ok(it) => {it}
+                Err(it) => {panic!("could not receive query! {}", it)}
+            };
+            if let Command::QueryInterfaceResponse(it) = data.payload_data {
+                log::info!("got packet that was response data! cmf:{}", it.command_number_first);
+                return it;
+            } else {log::info!("got packet that wasn't a interface response data! {}", data);}
+        }
+    }
+    pub fn generate_module(id: u8, is_parent: bool, out: &Sender<Packet>, receiver: &Receiver<Packet>) -> Module {
+        let req_cmd = Command::QueryInterface(QueryInterfaceData::new_deka());
+        let req_packet = Packet::new(req_cmd, id, 0);
+        out.send(req_packet).unwrap();
+        let pack = Self::try_get_packet(receiver);
+        Self::from_deka_discovery(id, &pack, is_parent)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq)]

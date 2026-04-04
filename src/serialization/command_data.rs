@@ -1,7 +1,7 @@
 use crate::serialization::command_utils::RESPONSE_BIT;
 use std::fmt::{Debug, Display};
 
-pub trait CommandData: Sized + Send + Clone + Display + Into<Vec<u8>> + Debug + PartialEq {
+pub trait CommandData: Sized + Send + Clone + Display + Into<Vec<u8>> + PartialEq {
     fn to_packet_id(&self) -> u16;
     fn from_bytes(id: u16, data: &[u8], dest_addr: u8) -> Option<Self>;
     fn get_bytes_len(&self) -> usize;

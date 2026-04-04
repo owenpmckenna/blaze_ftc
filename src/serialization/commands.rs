@@ -3,6 +3,7 @@ use crate::serialization::command_data::CommandData;
 use crate::serialization::command_utils::{RESPONSE_BIT, StandardCommands};
 use nix::NixPath;
 use std::fmt::{Display, Formatter};
+use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnknownData {
@@ -66,16 +67,80 @@ impl CommandData for AckData {
     }
 }
 
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, TryFromPrimitive)]
+pub enum StandardReasonCode {
+    Param0 = 0,
+    Param1 = 1,
+    Param2 = 2,
+    Param3 = 3,
+    Param4 = 4,
+    Param5 = 5,
+    Param6 = 6,
+    Param7 = 7,
+    Param8 = 8,
+    Param9 = 9,
+
+    GpioOut0 = 10,
+    GpioOut1 = 11,
+    GpioOut2 = 12,
+    GpioOut3 = 13,
+    GpioOut4 = 14,
+    GpioOut5 = 15,
+    GpioOut6 = 16,
+    GpioOut7 = 17,
+    GpioNoOutput = 18,
+
+    GpioIn0 = 20,
+    GpioIn1 = 21,
+    GpioIn2 = 22,
+    GpioIn3 = 23,
+    GpioIn4 = 24,
+    GpioIn5 = 25,
+    GpioIn6 = 26,
+    GpioIn7 = 27,
+    GpioNoInput = 28,
+
+    ServoNotConfigBeforeEnabled = 30,
+    BatteryTooLowToRunServo = 31,
+
+    I2cMasterBusy = 40,
+    I2cOperationInProgress = 41,
+    I2cNoResultsPending = 42,
+    I2cQueryMismatch = 43,
+    I2cTimeoutSdaStuck = 44,
+    I2cTimeoutSckStuck = 45,
+    I2cTimeoutUnknownCause = 46,
+
+    MotorNotConfigBeforeEnabled = 50,
+    CommandInvalidForMotorMode = 51,
+    BatteryTooLowToRunMotor = 52,
+
+    CommandImplPending = 253,
+    CommandRoutingError = 254,
+    PacketTypeIdUnknown = 255,
+}
 #[derive(Clone, Debug, PartialEq)]
-pub struct NackData {}
+pub struct NackData {
+    pub(crate) reason_code: u8
+}
+impl NackData {
+    pub fn reason(&self) -> StandardReasonCode {
+        StandardReasonCode::try_from(self.reason_code).expect("could not get reason code")
+    }
+}
 impl Display for NackData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Nack")
+        let reason = match StandardReasonCode::try_from(self.reason_code) {
+            Ok(it) => {it}
+            Err(_) => {panic!("could not parse NACK reason code {}", self.reason_code)}
+        };
+        write!(f, "Nack[code:{},reason:{:?}]", self.reason_code, reason)
     }
 }
 impl Into<Vec<u8>> for NackData {
     fn into(self) -> Vec<u8> {
-        vec![]
+        vec![self.reason_code]
     }
 }
 impl CommandData for NackData {
@@ -84,13 +149,15 @@ impl CommandData for NackData {
     }
     fn from_bytes(id: u16, data: &[u8], _: u8) -> Option<Self> {
         if Self::command_number(id) == StandardCommands::NACK as u16 {
-            Some(Self {})
+            Some(Self {
+               reason_code: data[0]
+            })
         } else {
             None
         }
     }
     fn get_bytes_len(&self) -> usize {
-        0
+        1
     }
 }
 

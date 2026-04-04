@@ -13,7 +13,7 @@ use log::log;
 use std::fmt::{Display, Formatter, Pointer, write};
 use std::io::Error;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Command {
     //MotorSetPower,
     //Standard Commands

@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Display, Formatter};
 use crate::serialization::command::Command;
 use crate::serialization::commands::{AckData, NackData};
 use log::log;
@@ -16,7 +17,7 @@ pub fn bytes_equal(a: &[u8], b: &[u8]) -> bool {
         })
         .is_none();
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Packet {
     pub packet_length: u16,
     pub dest_module_addr: u8,
@@ -34,6 +35,26 @@ pub struct Packet {
     pub payload_data: Command,
     pub checksum: u8,
 }
+impl Display for Packet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,
+            "Packet[len:{}, dest:{}, src:{}, msg num:{}, ref num:{}, id:{}, cmd:{}, chksum:{}]",
+            self.packet_length,
+            self.dest_module_addr,
+            self.src_module_addr,
+            self.message_number,
+            self.reference_number,
+            self.packet_id,
+            self.payload_data,
+            self.checksum
+        )
+    }
+}
+impl Debug for Packet {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self)
+    }
+}
 impl Packet {
     pub(crate) fn null() -> Packet {
         Packet {
@@ -43,7 +64,7 @@ impl Packet {
             message_number: 0,
             reference_number: 0,
             packet_id: 0,
-            payload_data: Command::Nack(NackData {}),
+            payload_data: Command::Nack(NackData {reason_code: 255}),
             checksum: 0,
         }
     }
@@ -70,18 +91,18 @@ impl Packet {
     pub fn is_start(data: &[u8]) -> bool {
         bytes_equal(&data[0..2], &FRAME_BYTES)
     }
-    pub fn from_data(data: &[u8]) -> Option<(Packet, Vec<u8>)> {
+    pub fn from_data(data: &[u8]) -> Option<Packet> {
         if !Self::is_start(data) {
             //check 0,1
             return None;
         }
-        let len_bytes = data[2..4].try_into().unwrap();
+        let len_bytes = data[2..4].try_into().expect("could not convert bytes type 0");
         let len = u16::from_le_bytes(len_bytes); //2,3
         let dest_module_addr = u8::from_le_bytes([data[4]]); //4
         let src_module_addr = u8::from_le_bytes([data[5]]); //5
         let message_number = u8::from_le_bytes([data[6]]); //6
         let reference_number = u8::from_le_bytes([data[7]]); //7
-        let packet_id_bytes = data[8..10].try_into().unwrap(); //8,9
+        let packet_id_bytes = data[8..10].try_into().expect("could not convert bytes type 1"); //8,9
         let packet_id = u16::from_le_bytes(packet_id_bytes);
         let checksum = u8::from_le_bytes([data[len as usize - 1]]); //last byte
         let our_checksum = BSChecksum::new()
@@ -112,7 +133,7 @@ impl Packet {
             packet.checksum(),
             reference_number
         );
-        Some((packet, Vec::from(&data[len as usize..data.len()])))
+        Some(packet)
     }
     pub fn checksum(&self) -> u8 {
         BSChecksum::new()

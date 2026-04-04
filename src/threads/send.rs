@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use std::{panic, thread};
+use thread_priority::{get_current_thread_priority, set_current_thread_priority, ThreadPriority};
 use crate::catch;
 
 const BYTES_PER_SEC: f64 = 460800f64 / 10f64;
@@ -27,6 +28,16 @@ where
     let (write_sender, write_receiver) = unbounded::<Packet>();
     thread::spawn(move || {
         catch(move || {
+            {
+                let core_ids = core_affinity::get_core_ids().unwrap();
+                let worked = core_affinity::set_for_current(core_ids[1]);
+                log::info!("write thread just attempted to pin to core {}. return: {}", core_ids[1].id, worked);
+                log::info!("just set read thread priority: old: {:?} err: {:?}, new: {:?}",
+                    get_current_thread_priority().expect("could not get thread priority read"),
+                    set_current_thread_priority(ThreadPriority::Max),
+                    get_current_thread_priority().expect("could not get thread priority read - 2"),
+                );
+            }
             let mut start = Instant::now();
             let mut lens = [(Instant::now(), 0usize); 100];
             let mut lens_id = 0usize;

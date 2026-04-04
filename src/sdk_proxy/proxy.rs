@@ -1,13 +1,17 @@
+use std::fmt::{Debug, Formatter};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crossbeam_channel::{unbounded, Receiver, Sender};
+use crate::control::hardware::LynxHub;
 use crate::control::robot::{Interceptor, Robot};
 use crate::sdk_proxy::read_proxy::generate_read_sdk_proxy;
-use crate::sdk_proxy::send_proxy::generate_write_sdk_proxy;
+use crate::sdk_proxy::send_proxy::{generate_write_sdk_proxy, MessageList};
 use crate::serialization::packet::Packet;
+use crate::threads::timing_analyzer::TimingAnalyzer;
 
+pub static TIMING_TRACKER: LazyLock<TimingAnalyzer> = LazyLock::new(|| TimingAnalyzer::new());
 pub struct Proxy {
     running: &'static AtomicBool,
     /**
@@ -29,12 +33,13 @@ pub struct Proxy {
      * these are called for input packets. They can return None to stop a packet. They can also
      * return mutated packets
      */
-    interceptors: Mutex<Vec<Box<dyn Interceptor>>>
+    interceptors: Mutex<Vec<Box<dyn Interceptor>>>,
+    pub message_list: Arc<MessageList>,
 }
 impl Proxy {
     pub fn new(direct_send: Sender<Packet>, direct_receive: Receiver<Packet>, running: &'static AtomicBool) -> (Sender<Packet>, Receiver<Packet>, Proxy) {
         let ftc_packets = Arc::new(Mutex::new(vec![]));
-        let (send, sdk_send) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running);
+        let (send, sdk_send, message_list) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running);
         let (receive, sdk_receive, sdk_receive_input) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running);
         (send, receive, Proxy {
             running,
@@ -44,30 +49,28 @@ impl Proxy {
             sdk_buffer: unbounded(),
             sdk_has_received: AtomicBool::new(false),
             ftc_packets,
-            interceptors: Mutex::new(vec![])
+            interceptors: Mutex::new(vec![]),
+            message_list
         })
     }
-    pub fn write(&self, data: Vec<u8>) {
-        let packet = Packet::from_data(&data);
-        match packet {
-            None => {
-                log::error!("data from java not complete. discarding...")
-            }
-            Some(it) => {
-                log::trace!("data from java received! ref num:{}", it.0.reference_number);
-                let mut lock = self.interceptors.lock().unwrap();
-                let mut packet = Some(it.0);
-                for interceptor in lock.iter_mut() {
-                    if let Some(pack) = packet {
-                        //this may return None and swallow the packet
-                        packet = interceptor.intercept(pack, &self.sdk_receive_input);
-                    } else { return; }
-                }
-                if let Some(pack) = packet {
-                    self.sdk_send.send(pack).unwrap();
-                }
-            }
+    ///returns whether the packet was actually sent
+    pub fn write(&self, packet: Packet, wait: Option<&'static LynxHub>) -> bool {
+        log::trace!("data from java received! ref num:{}", packet.reference_number);
+        let mut lock = self.interceptors.lock().unwrap();
+        let mut packet = Some(packet);
+        for interceptor in lock.iter_mut() {
+            if let Some(pack) = packet {
+                //this may return None and swallow the packet
+                packet = interceptor.intercept(pack, &self.sdk_receive_input);
+            } else { continue; }
         }
+        if let Some(pack) = packet {
+            if let Some(wait) = wait {
+                wait.notify_send_packet(&pack);
+            }
+            self.sdk_send.send(pack).unwrap();
+            true
+        } else {false}
     }
     pub fn read(&self, len: usize) -> Vec<u8> {
         let usable = &self.sdk_receive;
@@ -76,7 +79,7 @@ impl Proxy {
 
         if rx.is_empty() {
             log::trace!("waiting on packet for ftc!");
-            let data = match usable.recv() {
+            let mut data = match usable.recv() {
                 Ok(it) => it,
                 Err(it) => {
                     log::error!("error waiting for ftc data: {}", it);
@@ -84,6 +87,7 @@ impl Proxy {
                     panic!("error waiting for ftc data: {}", it)
                 }
             };
+            data.checksum = data.checksum();
             let id = data.packet_id;
             let data: Vec<u8> = data.into();
             log::trace!("got packet for ftc! p id:{}, len:{}", id, data.len());
@@ -124,14 +128,23 @@ impl Proxy {
 
         temp
     }
-    pub fn add_interceptor(&self, interceptor: Box<dyn Interceptor>) {
+    pub(crate) fn add_interceptor(&self, interceptor: Box<dyn Interceptor>) {
         self.interceptors.lock().unwrap().push(interceptor);
     }
+    pub(crate) fn remove_interceptors(&self) {
+        self.interceptors.lock().expect("could not lock interceptors").clear();
+    }
 }
-#[derive(Clone)]
+impl Debug for Proxy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PROXY")
+    }
+}
+#[derive(Clone, Debug)]
 pub struct IdTransform {
     pub old_id: u8,
     pub new_id: u8,
     pub old_pack_id: u16,
     pub old_pack: Packet,
+    pub sent_time: Instant
 }
