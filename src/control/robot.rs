@@ -1,5 +1,3 @@
-use std::backtrace::Backtrace;
-use std::cell::{Ref, RefCell};
 use std::fmt::Debug;
 use std::mem::discriminant;
 use std::panic::{catch_unwind, panic_any, RefUnwindSafe, UnwindSafe};
@@ -8,21 +6,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-use arc_swap::ArcSwap;
-use crossbeam_channel::{Sender, Receiver, select, unbounded, never, RecvTimeoutError};
-use crate::{catch, PROXY, RUNNING};
+use crossbeam_channel::{Sender, Receiver, select, unbounded, never};
+use crate::{catch};
 use crate::control::gamepad::Gamepad;
-use crate::control::hardware::{LynxHub, UnderlyingHw};
+use crate::control::hardware::{LynxHub};
 use crate::control::hardware::UnderlyingHw::DirectProxy;
 use crate::sdk_proxy::proxy::Proxy;
-use crate::serialization::command::Command::Ack;
-use crate::serialization::command_utils::Module;
 use crate::serialization::i2c_comms::i2c_device::{I2CConsumer, I2CDevice, I2CDeviceHandler, I2CDevicePair};
 use crate::serialization::lynx_commands::lynx_commands::LynxGetBulkDataResponseData;
 use crate::serialization::packet::Packet;
 use crate::telemetry::telemetry::Telemetry;
 
-pub struct Robot<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub struct Robot<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     pub hub_0: &'static LynxHub,
     pub hub_1: Option<&'static LynxHub>,//optional expansion hub. not tested
     hub_0_handlers: Vec<Box<Mutex<dyn BulkReadHandler<Target, StateUpdate>>>>,
@@ -42,8 +37,8 @@ pub struct Robot<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + R
 }
 pub static KILL_CHANNEL: OnceLock<(Sender<()>, Receiver<()>)> = OnceLock::new();
 pub(crate) static IS_RUNNING: OnceLock<AtomicBool> = OnceLock::new();
-impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static,
-                                                           StateUpdate: Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
+                                                           StateUpdate: ThreadSafe + Debug {
     pub(crate) fn kill_channel() -> &'static (Sender<()>, Receiver<()>) {
         KILL_CHANNEL.get_or_init(|| unbounded())
     }
@@ -324,13 +319,13 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: Send + Unwind
         } else { panic!("could not find any real proxies!") }
     }
 }
-pub trait GamepadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub trait GamepadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn update(&mut self, robot: &Robot<Target, StateUpdate>, gp0: &Gamepad, gp1: &Gamepad);
 }
-pub trait BulkReadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub trait BulkReadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn update(&mut self, robot: &Robot<Target, StateUpdate>, data: &LynxGetBulkDataResponseData);
 }
-pub struct MainThread<Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate: Send + UnwindSafe + Sync + RefUnwindSafe + 'static> {
+pub struct MainThread<Target: ThreadSafe, StateUpdate: ThreadSafe + Debug> {
     pub target: Target,
     sender: Sender<Target>,
     receiver: Receiver<StateUpdate>,
@@ -339,8 +334,7 @@ pub struct MainThread<Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone +
     processors: Option<Vec<fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()>>,
     pub telemetry: Telemetry,
 }
-impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static,
-                                                                StateUpdate: Send + UnwindSafe + Sync + RefUnwindSafe + 'static + PartialEq + Clone + std::fmt::Debug {
+impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn new(default_target: Target, sender: Sender<Target>, receiver: Receiver<StateUpdate>, func: Option<fn(&mut Self) -> ()>, telemetry: Telemetry,  processors: Vec<fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()>) -> MainThread<Target, StateUpdate> {
         MainThread {target: default_target, sender, receiver, state: vec![], function: func, processors: Some(processors), telemetry}
     }
@@ -484,22 +478,22 @@ impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: Send + U
 pub(crate) trait Interceptor: Send + Sync + RefUnwindSafe {
     fn intercept(&mut self, pack: Packet, send: &Sender<Packet>) -> Option<Packet>;
 }
-struct InterceptorData<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+struct InterceptorData<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     func: Box<dyn SdkPacketHandler<Target, StateUpdate>>,
     robot: Arc<Robot<Target, StateUpdate>>
 }
-impl<Target, StateUpdate> Interceptor for InterceptorData<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+impl<Target, StateUpdate> Interceptor for InterceptorData<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn intercept(&mut self, pack: Packet, send: &Sender<Packet>) -> Option<Packet> {
         self.func.handle_packet(self.robot.as_ref(), pack, send)
     }
 }
-impl<'a, Target, StateUpdate> InterceptorData<Target, StateUpdate> where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+impl<'a, Target, StateUpdate> InterceptorData<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn new(func: Box<dyn SdkPacketHandler<Target, StateUpdate>>, robot: Arc<Robot<Target, StateUpdate>>) -> InterceptorData<Target, StateUpdate> {
         InterceptorData {func, robot}
     }
 }
 
-pub trait SdkPacketHandler<Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub trait SdkPacketHandler<Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn handle_packet(&mut self, robot: &Robot<Target, StateUpdate>, packet: Packet, to_reader: &Sender<Packet>) -> Option<Packet>;
     //msgnum = refnum
     fn try_get_sender<'a>(&self, robot: &'a Robot<Target, StateUpdate>, addr: u8) -> Option<&'a Sender<Packet>> {
@@ -518,3 +512,7 @@ pub trait SdkPacketHandler<Target, StateUpdate>: Send + Sync + UnwindSafe + RefU
 ///This tells us whether a main thread panic was intentional or not.
 #[derive(Debug, Copy, Clone, Default)]
 pub struct OpModeStop {}
+
+
+pub trait ThreadSafe : Send + UnwindSafe + Sync + RefUnwindSafe + Clone + PartialEq + 'static {}
+impl<T: RefUnwindSafe + Send + UnwindSafe + Sync + Clone + PartialEq + 'static> ThreadSafe for T {}

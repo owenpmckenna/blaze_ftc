@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::panic::{RefUnwindSafe, UnwindSafe};
 use crate::control::hardware::LynxHub;
-use crate::control::robot::Robot;
+use crate::control::robot::{Robot, ThreadSafe};
 use crate::serialization::lynx_commands::base_lynx_command::LynxCommand;
 use crate::serialization::lynx_commands::lynx_commands::{LynxI2CSingleByteWriteCommandData, LynxI2cWriteMultipleBytesCommandData};
 use crate::serialization::packet::Packet;
@@ -32,17 +32,17 @@ pub trait I2CDevice<T> : Send + Sync + UnwindSafe + RefUnwindSafe {
         lynx_hub.send_lynx_packet(packet);
     }
 }
-pub trait I2CDeviceHandler<Device, T, Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Device: I2CDevice<T>, Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub trait I2CDeviceHandler<Device, T, Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Device: I2CDevice<T>, Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn handle(&mut self, robot: &Robot<Target, StateUpdate>, device: &mut Box<Device>, data: &T);
 }
-pub(crate) struct I2CDevicePair<Device, T, Target, StateUpdate> where Device: I2CDevice<T>, Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate:  Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub(crate) struct I2CDevicePair<Device, T, Target, StateUpdate> where Device: I2CDevice<T>, Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     pub(crate) device: Box<Device>,
     pub(crate) handlers: Vec<Box<dyn I2CDeviceHandler<Device, T, Target, StateUpdate>>>
 }
-pub(crate) trait I2CConsumer<Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate: Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+pub(crate) trait I2CConsumer<Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn maybe_consume_packet(&mut self, robot: &Robot<Target, StateUpdate>, packet: Packet) -> Option<Packet>;
 }
-impl<Device, T, Target, StateUpdate> I2CConsumer<Target, StateUpdate> for I2CDevicePair<Device, T, Target, StateUpdate> where Device: I2CDevice<T>, Target: Send + UnwindSafe + Sync + RefUnwindSafe + Clone + 'static, StateUpdate: Send + UnwindSafe + Sync + RefUnwindSafe + PartialEq + 'static + Clone + Debug {
+impl<Device, T, Target, StateUpdate> I2CConsumer<Target, StateUpdate> for I2CDevicePair<Device, T, Target, StateUpdate> where Device: I2CDevice<T>, Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
     fn maybe_consume_packet(&mut self, robot: &Robot<Target, StateUpdate>, packet: Packet) -> Option<Packet> {
         match self.device.try_interpret_response(packet) {
             I2CDeviceResult::Data(it) => {

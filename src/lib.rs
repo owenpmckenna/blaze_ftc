@@ -345,7 +345,7 @@ static SEND_PROPERTY_CHANNELS: OnceLock<(Sender<(String, String)>, Receiver<(Str
 pub(crate) fn get_property_channels() -> &'static (Sender<(String, String)>, Receiver<(String, String)>) {
     SEND_PROPERTY_CHANNELS.get_or_init(|| unbounded())
 }
-/*#[unsafe(no_mangle)]
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_send_property(
     mut env: EnvUnowned,
     _class: JClass,
@@ -358,7 +358,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_send_property(
         get_property_channels().0.send((key, value)).expect("could not send property");
         Ok(())
     }).resolve::<ThrowRuntimeExAndDefault>();
-}*/
+}
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_setMotorPower(
