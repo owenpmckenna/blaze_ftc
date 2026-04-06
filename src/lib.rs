@@ -183,7 +183,7 @@ static TELEMETRY: OnceLock<Telemetry> = OnceLock::new();
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_run(
-    env: EnvUnowned,
+    _env: EnvUnowned,
     _class: JClass,
     to_run: jint
 ) {
@@ -283,7 +283,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_write(
     mut env: EnvUnowned,
     _class: JClass,
     buffer: JByteArray,
-    connectionNumber: jint//we *should* be able to just use the packet's id, but I'm keeping this just in case
+    _connection_number: jint//we *should* be able to just use the packet's id, but I'm keeping this just in case
 ) {
     env.with_env(|env| -> Result<_, jni::errors::Error> {
         catch(|| {
@@ -334,7 +334,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_gamepad(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_available(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
 ) -> jint {
     //TODO implement this haha
@@ -362,7 +362,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_send_property(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_setMotorPower(
-    env: JNIEnv, _class: JClass, module: jint, port: jint, power: jdouble
+    _env: EnvUnowned, _class: JClass, module: jint, port: jint, power: jdouble
 ) {
     catch(|| {
         [&HUB_0, &HUB_1].into_iter().for_each(move |it| {
@@ -383,14 +383,14 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_read(
     buffer: JByteArray,
     off: jint,
     len: jint,
-    connectionNumber: jint
+    connection_number: jint
 ) -> jint {
     env.with_env(|env| -> Result<jint, jni::errors::Error> {
         log::trace!("ftc: waiting for data...");
         let hub = match HUB_1.get() {
             None => {HUB_0.get().unwrap()}
             Some(it) => {
-                if it.module.module_addr == connectionNumber as u8 {//will "as u8" work? stay tuned for more stupid java nonsense!
+                if it.module.module_addr == connection_number as u8 {//will "as u8" work? stay tuned for more stupid java nonsense!
                     it
                 } else { HUB_0.get().unwrap() }
             }
@@ -410,7 +410,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_read(
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_close(_env: JNIEnv, _class: JClass) {
+pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_close(_env: EnvUnowned, _class: JClass) {
     log::info!("trying to stop...");
     set_allowed_to_send_dangerous_packets(false);
     KILL_CHANNEL.get().expect("could not access kill channel???")
@@ -422,8 +422,7 @@ use crate::serialization::command_utils::Module;
 use android_logger::Config;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::refs::Global;
-use jni::strings::JNIString;
-use log::{LevelFilter, log};
+use log::{LevelFilter};
 use serial2::{CharSize, FlowControl, Parity, SerialPort, Settings, StopBits};
 use crate::sdk_proxy::proxy::Proxy;
 
@@ -457,9 +456,9 @@ impl ElapsedTimer {
 }
 
 use num_traits::{Num, FromPrimitive};
-use termios::{cfmakeraw, tcgetattr, tcsetattr, Termios, IXANY, IXOFF, IXON, OPOST, TCSANOW, VMIN, VTIME};
+use termios::{cfmakeraw, tcsetattr, Termios, IXANY, IXOFF, IXON, OPOST, TCSANOW, VMIN, VTIME};
 use crate::control::hardware::{LynxHub, UnderlyingHw};
-use crate::control::robot::{Robot, IS_RUNNING, KILL_CHANNEL};
+use crate::control::robot::{IS_RUNNING, KILL_CHANNEL};
 
 pub struct MovingAverage<T> where T: Num + FromPrimitive + Copy {
     data: Vec<T>,

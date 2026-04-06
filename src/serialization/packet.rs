@@ -1,8 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 use crate::serialization::command::Command;
-use crate::serialization::commands::{AckData, NackData};
-use log::log;
-use std::io::Error;
+use crate::serialization::commands::{NackData};
 
 pub const FRAME_BYTES: [u8; 2] = [68u8, 75u8];
 pub fn bytes_equal(a: &[u8], b: &[u8]) -> bool {
@@ -180,7 +178,7 @@ impl BSChecksum {
         self.value = self.value.overflowing_add(i).0;
         self
     }
-    fn consume_u16(mut self, i: u16) -> BSChecksum {
+    fn consume_u16(self, i: u16) -> BSChecksum {
         self.consume_bytes(&i.to_le_bytes())
     }
     fn consume_bytes(mut self, bytes: &[u8]) -> BSChecksum {

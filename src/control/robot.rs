@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::mem::discriminant;
 use std::panic::{catch_unwind, panic_any, RefUnwindSafe, UnwindSafe};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,28 +16,27 @@ use crate::serialization::lynx_commands::lynx_commands::LynxGetBulkDataResponseD
 use crate::serialization::packet::Packet;
 use crate::telemetry::telemetry::Telemetry;
 
-pub struct Robot<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
+pub struct Robot {
     pub hub_0: &'static LynxHub,
     pub hub_1: Option<&'static LynxHub>,//optional expansion hub. not tested
-    hub_0_handlers: Vec<Box<Mutex<dyn BulkReadHandler<Target, StateUpdate>>>>,
-    hub_1_handlers: Vec<Box<Mutex<dyn BulkReadHandler<Target, StateUpdate>>>>,
-    gp_handlers: Vec<Box<Mutex<dyn GamepadHandler<Target, StateUpdate>>>>,
+    hub_0_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
+    hub_1_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
+    gp_handlers: Vec<Box<Mutex<dyn GamepadHandler>>>,
     gamepad_receiver: &'static Receiver<(Vec<u8>, Vec<u8>)>,
     pub telemetry: &'static Telemetry,
-    initializer: Option<fn(&mut Robot<Target, StateUpdate>) -> Target>,
-    i2c_devices: Vec<Mutex<Box<dyn I2CConsumer<Target, StateUpdate>>>>,
-    handler_target: RwLock<Option<Target>>,
-    target_receiver: Option<Receiver<Target>>,
-    state_updater: Option<Sender<StateUpdate>>,
-    init_update_processors: Vec<fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()>,
-    main_thread_func: Option<fn(&mut MainThread<Target, StateUpdate>) -> ()>,
-    proxy_interceptors_init_hub_0: Option<Vec<Box<dyn SdkPacketHandler<Target, StateUpdate>>>>,
-    proxy_interceptors_init_hub_1: Option<Vec<Box<dyn SdkPacketHandler<Target, StateUpdate>>>>,
+    initializer: Option<fn(&mut Robot) -> ()>,
+    i2c_devices: Vec<Mutex<Box<dyn I2CConsumer>>>,
+    handler_target: RwLock<HashMap<TypeId, Box<dyn ThreadSafe>>>,
+    target_receiver: Option<Receiver<Box<dyn ThreadSafe>>>,
+    state_updater: Option<Sender<Box<dyn ThreadSafe>>>,
+    init_update_processors: Vec<fn(&mut MainThread, &Box<dyn ThreadSafe>) -> ()>,
+    main_thread_func: Option<fn(&mut MainThread) -> ()>,
+    proxy_interceptors_init_hub_0: Option<Vec<Box<dyn SdkPacketHandler>>>,
+    proxy_interceptors_init_hub_1: Option<Vec<Box<dyn SdkPacketHandler>>>,
 }
 pub static KILL_CHANNEL: OnceLock<(Sender<()>, Receiver<()>)> = OnceLock::new();
 pub(crate) static IS_RUNNING: OnceLock<AtomicBool> = OnceLock::new();
-impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
-                                                           StateUpdate: ThreadSafe + Debug {
+impl Robot {
     pub(crate) fn kill_channel() -> &'static (Sender<()>, Receiver<()>) {
         KILL_CHANNEL.get_or_init(|| unbounded())
     }
@@ -47,7 +45,7 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
     }
     pub fn new(hub_0: &'static LynxHub, hub_1: Option<&'static LynxHub>,
                gamepad_receiver: &'static Receiver<(Vec<u8>, Vec<u8>)>, telemetry: &'static Telemetry,
-               initializer: fn(&mut Robot<Target, StateUpdate>) -> Target) -> Robot<Target, StateUpdate> {
+               initializer: fn(&mut Robot) -> ())-> Robot {
         Self::kill_channel();
         Self::is_running().store(true, Ordering::SeqCst);
         Robot {
@@ -60,7 +58,7 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
             telemetry,
             initializer: Some(initializer),
             i2c_devices: vec![],
-            handler_target: RwLock::new(None),
+            handler_target: RwLock::new(HashMap::new()),
             target_receiver: None,
             state_updater: None,
             init_update_processors: vec![],
@@ -80,9 +78,8 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
         let init = self.initializer.expect("no initializer found");
         self.initializer = None;
         log::info!("running init function");
-        let default = init(&mut self);
+        init(&mut self);
         log::info!("ran init function");
-        self.set_target(default.clone());//make sure we have a target set always, so we don't have to use Option<>
 
         //grab the things the main thread will need later, before we create the Arc which consumes this type
         let processors = self.init_update_processors;
@@ -124,13 +121,13 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
         thread::spawn(move || {
             //this thread waits for MainThread to panic or exit
             let thread = thread::spawn(move || {
-                MainThread::new(default, t_tx, s_rx, func, later_telemetry, processors)
+                MainThread::new(t_tx, s_rx, func, later_telemetry, processors)
                     .run();
             });
             match thread.join() {
-                Ok(it) => {/*kinda shouldn't happen I think*/}
+                Ok(_) => {/*kinda shouldn't happen I think*/}
                 Err(it) => {
-                    if let Some(v) = it.downcast_ref::<OpModeStop>() {
+                    if let Some(_opmodestop) = it.downcast_ref::<OpModeStop>() {
                         log::info!("MainThread Stopped");
                     } else {
                         //user code panicked.
@@ -146,8 +143,8 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
         select! {
             recv(self.target_receiver.as_ref().unwrap()) -> msg => {
                 log::trace!("got new target");
-                let data = msg.unwrap();
-                self.set_target(data);
+                let data: Box<dyn ThreadSafe> = msg.unwrap();
+                self.put_target(data);
             }
             recv(self.gamepad_receiver) -> msg => {
                 log::trace!("got new gp");
@@ -226,7 +223,7 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
                     return;
                 }
                 log::trace!("handling packet 1 rn{}", data.as_ref().unwrap().reference_number);
-                data = match self.hub_1.as_ref().unwrap().should_consume(data.as_ref().unwrap()) {
+                match self.hub_1.as_ref().unwrap().should_consume(data.as_ref().unwrap()) {
                     None => {
                         Some(data.unwrap())
                     }
@@ -241,36 +238,44 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
             }
         }
     }
-    pub fn add_hub_0_handler<D>(&mut self, func: D) where D: BulkReadHandler<Target, StateUpdate> + 'static {
+    pub fn add_hub_0_handler<D>(&mut self, func: D) where D: BulkReadHandler + 'static {
         self.hub_0_handlers.push(Box::new(Mutex::new(func)));
     }
-    pub fn add_hub_1_handler<D>(&mut self, func: D) where D: BulkReadHandler<Target, StateUpdate> + 'static {
+    pub fn add_hub_1_handler<D>(&mut self, func: D) where D: BulkReadHandler + 'static {
         self.hub_1_handlers.push(Box::new(Mutex::new(func)));
     }
-    pub fn add_gp_handler<D>(&mut self, func: D) where D: GamepadHandler<Target,StateUpdate> + 'static {
+    pub fn add_gp_handler<D>(&mut self, func: D) where D: GamepadHandler + 'static {
         self.gp_handlers.push(Box::new(Mutex::new(func)));
     }
-    pub fn add_i2c_device<Device: 'static, T: 'static>(&mut self, device: Box<Device>, handlers: Vec<Box<dyn I2CDeviceHandler<Device, T, Target, StateUpdate>>>) where Device: I2CDevice<T> {
+    pub fn add_i2c_device<Device: 'static, T: 'static>(&mut self, device: Box<Device>, handlers: Vec<Box<dyn I2CDeviceHandler<Device, T>>>) where Device: I2CDevice<T> {
         let both = I2CDevicePair { device, handlers };
         self.i2c_devices.push(Mutex::new(Box::new(both)));
     }
-    pub fn add_update_processor(&mut self, func: fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()) {
+    pub fn add_update_processor(&mut self, func: fn(&mut MainThread, &Box<dyn ThreadSafe>) -> ()) {
         self.init_update_processors.push(func);
     }
-    pub fn set_main_thread(&mut self, func: fn(&mut MainThread<Target, StateUpdate>) -> ()) {
+    pub fn set_main_thread(&mut self, func: fn(&mut MainThread) -> ()) {
         self.main_thread_func = Some(func);
     }
-    pub fn target(&self) -> Target {
-        self.handler_target.read().expect("could not lock handler target for read").as_ref()
-            .expect("no handler target").clone()
+    ///get a certain type of target
+    pub fn target<T>(&self) -> Option<T> where T: ThreadSafe + Clone {
+        let read = self.handler_target.read().expect("could not lock handler target for read");
+        let x = read.get(&TypeId::of::<T>());
+        if let Some(x) = x {
+            x.as_any().downcast_ref::<T>().cloned()
+        } else {
+            None
+        }
     }
-    fn set_target(&self, state: Target) {
+    ///this is private, should only be called when we got something from the channel
+    fn put_target(&self, state: Box<dyn ThreadSafe>) {
         let x = self.handler_target.write();
         let mut write = x.expect("could not get handler target lock");
-        *write = Some(state);
+        log::info!("target types: {:?}, {:?}, {:?}", state.type_id(), (*state).type_id(), (*state).as_any().type_id());
+        write.insert((*state).as_any().type_id(), state);
     }
-    pub fn send_state_update(&self, s: StateUpdate) {
-        self.state_updater.as_ref().unwrap().send(s).unwrap();
+    pub fn send_state_update<T>(&self, s: T) where T: ThreadSafe {
+        self.state_updater.as_ref().unwrap().send(Box::new(s)).unwrap();
     }
     pub(crate) fn catch_user_function<F, R>(func: F, error_func: R, telemetry: &Telemetry) where F: FnOnce() -> () + UnwindSafe, R: FnOnce() -> String {
         let result = catch_unwind(func);
@@ -292,11 +297,11 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
             }
         }
     }
-    pub fn add_proxy_interceptor_hub_0<D>(&mut self, func: D) where D: SdkPacketHandler<Target, StateUpdate> + 'static {
+    pub fn add_proxy_interceptor_hub_0<D>(&mut self, func: D) where D: SdkPacketHandler + 'static {
         let list = self.proxy_interceptors_init_hub_0.as_mut().unwrap();
         list.push(Box::new(func));
     }
-    pub fn add_proxy_interceptor_hub_1<D>(&mut self, func: D) where D: SdkPacketHandler<Target, StateUpdate> + 'static {
+    pub fn add_proxy_interceptor_hub_1<D>(&mut self, func: D) where D: SdkPacketHandler + 'static {
         let list = self.proxy_interceptors_init_hub_1.as_mut().unwrap();
         list.push(Box::new(func));
     }
@@ -319,24 +324,25 @@ impl<Target, StateUpdate> Robot<Target, StateUpdate> where Target: ThreadSafe,
         } else { panic!("could not find any real proxies!") }
     }
 }
-pub trait GamepadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
-    fn update(&mut self, robot: &Robot<Target, StateUpdate>, gp0: &Gamepad, gp1: &Gamepad);
+pub trait GamepadHandler: Send + UnwindSafe {
+    fn update(&mut self, robot: &Robot, gp0: &Gamepad, gp1: &Gamepad);
 }
-pub trait BulkReadHandler<Target, StateUpdate>: Send + UnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
-    fn update(&mut self, robot: &Robot<Target, StateUpdate>, data: &LynxGetBulkDataResponseData);
+pub trait BulkReadHandler: Send + UnwindSafe {
+    fn update(&mut self, robot: &Robot, data: &LynxGetBulkDataResponseData);
 }
-pub struct MainThread<Target: ThreadSafe, StateUpdate: ThreadSafe + Debug> {
-    pub target: Target,
-    sender: Sender<Target>,
-    receiver: Receiver<StateUpdate>,
-    pub state: Vec<StateUpdate>,
+pub struct MainThread {
+    target: HashMap<TypeId, Box<dyn ThreadSafe>>,
+    ///target sender
+    target_sender: Sender<Box<dyn ThreadSafe>>,
+    state_receiver: Receiver<Box<dyn ThreadSafe>>,
+    state: HashMap<TypeId, Box<dyn ThreadSafe>>,
     function: Option<fn(&mut Self) -> ()>,
-    processors: Option<Vec<fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()>>,
+    processors: Option<Vec<fn(&mut MainThread, &Box<dyn ThreadSafe>) -> ()>>,
     pub telemetry: Telemetry,
 }
-impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
-    fn new(default_target: Target, sender: Sender<Target>, receiver: Receiver<StateUpdate>, func: Option<fn(&mut Self) -> ()>, telemetry: Telemetry,  processors: Vec<fn(&mut MainThread<Target, StateUpdate>, &StateUpdate) -> ()>) -> MainThread<Target, StateUpdate> {
-        MainThread {target: default_target, sender, receiver, state: vec![], function: func, processors: Some(processors), telemetry}
+impl MainThread {
+    fn new(target_sender: Sender<Box<dyn ThreadSafe>>, state_receiver: Receiver<Box<dyn ThreadSafe>>, func: Option<fn(&mut Self) -> ()>, telemetry: Telemetry,  processors: Vec<fn(&mut MainThread, &Box<dyn ThreadSafe>) -> ()>) -> MainThread {
+        MainThread {target: HashMap::new(), target_sender, state_receiver, state: HashMap::new(), function: func, processors: Some(processors), telemetry}
     }
     fn run(&mut self) {
         let func = self.function;
@@ -344,55 +350,49 @@ impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: ThreadSa
             func(self);
         }
         while self.is_running() {
-            self.get_statuses_blocking()
+            self.wait_for_status(|_| false);
         }
     }
-    pub fn set_target(&self) {
+    ///this both sets the local target and sends it over.
+    pub fn put_target<T>(&mut self, target: T) where T: ThreadSafe{
         self.maybe_panic();
-        self.sender.send(self.target.clone()).unwrap();
+        self.target_sender.send(target.clone_box()).unwrap();
+        log::trace!("mainthread storing typeid: {:?}", target.type_id());
+        self.target.insert(target.type_id(), Box::new(target));
     }
-    fn is_valid_fn(&self, data: &[(&StateUpdate, fn(&StateUpdate) -> bool)]) -> bool {
-        for status in data {
-            let mut found = false;
-            for comp in &self.state {
-                if discriminant(status.0) == discriminant(comp) {
-                    if !status.1(comp) {
-                        return false
-                    }
-                    found = true;
-                }
-            }
-            if !found {
-                return false
-            }
+    pub fn get_target<T>(&self) -> Option<&T> where T: ThreadSafe {
+        log::trace!("trying to get... {:?}", &TypeId::of::<T>());
+        let x = self.target.get(&TypeId::of::<T>());
+        if let Some(x) = x {
+            x.as_any().downcast_ref()
+        } else {
+            None
         }
-        true
     }
-    fn is_valid(&self, data: &[&StateUpdate]) -> bool {
-        self.maybe_panic();
-        for status in data {
-            let mut found = false;
-            //self.state is a Vec<StatusUpdate>
-            for comp in &self.state {
-                let stat_disc = discriminant(*status);
-                let comp_disc = discriminant(comp);
-                if stat_disc == comp_disc {
-                    if !(*status).eq(comp) {
-                        //log::info!("not valid on status:{:?} because not equal:{:?}. disc0:{:?}, disc1:{:?}",
-                        //    status, comp, stat_disc, comp_disc);
-                        return false
-                    }
-                    found = true;
-                }
-            }
-            if !found {
-                log::info!("not valid on status:{:?} because not found in state len:{}", status, self.state.len());
-                return false
-            }
+    pub fn get_status<T>(&self) -> Option<T> where T: ThreadSafe + Clone {
+        let x = self.state.get(&TypeId::of::<T>());
+        if let Some(x) = x {
+            let data: Option<&T> = x.as_any().downcast_ref::<T>();
+            if let Some(t) = data {
+                Some(t.clone())
+            } else { None }
+        } else {
+            None
         }
-        true
     }
-    fn process(&mut self, data: StateUpdate) -> StateUpdate {
+    ///tries to grab a new status, waiting on the channel for timeout time. Returns the TypeId of whatever it got, without the Box
+    pub fn try_wait_for_next_status(&mut self, timeout: Duration) -> Option<TypeId> {
+        let x = self.state_receiver.recv_timeout(timeout);
+        if let Ok(x) = x {
+            let td = (*x).type_id();
+            self.state.insert(td, x.clone_box());
+            self.process(x);
+            Some(td)
+        } else {
+            None
+        }
+    }
+    fn process(&mut self, data: Box<dyn ThreadSafe>) -> Box<dyn ThreadSafe> {
         //take them out, use them, reinsert them. whyyyyyyy
         let processors = self.processors.take().unwrap();
         for x in &processors {
@@ -400,106 +400,63 @@ impl<Target, StateUpdate> MainThread<Target, StateUpdate> where Target: ThreadSa
         }
         let _ = self.processors.insert(processors);
 
-        //check it against stuff in state, shove it in there.
-        for i in 0..self.state.len() {
-            if discriminant(&self.state[i]) == discriminant(&data){
-                self.state[i] = data.clone();
-                return data;
-            }
-        }
-        //didn't find anything...
-        self.state.push(data.clone());
         data
     }
-    pub fn get_statuses(&mut self) -> bool {
-        match self.receiver.try_recv() {
-            Ok(it) => {
-                self.process(it);
-                self.get_statuses();//just try again
-                true
-            }
-            Err(_) => {false}
+    ///call this to wait for a certain status. we will keep receiving new updates and allowing you to do whatever logic you want to check.
+    /// return true when you want to continue. fyi your function will be called every 10 ish millis, not just when you receive something
+    pub fn wait_for_status(&mut self, mut good: impl FnMut(&mut Self) -> bool) {
+        while !good(self) {
+            //10 ms is arbitrary, just to keep us from locking indefinitely
+            self.try_wait_for_next_status(Duration::from_millis(10));
+            self.maybe_panic();
         }
     }
-    fn block_on_receive(&mut self) -> StateUpdate {
-        while self.is_running() {
-            match self.receiver.recv_timeout(Duration::from_millis(10)) {
-                Ok(it) => {return it}
-                Err(_) => {}
-            }
-        }
-        self.maybe_panic();
-        panic!("ERROR SOMETHING IS WRONG");
-    }
-    fn get_statuses_blocking(&mut self) {
-        if !self.get_statuses() {//try to get non-blocking. if nothing, block.
-            let pack = self.block_on_receive();
-            self.process(pack);
-        }
-    }
-    pub fn wait_for_status(&mut self, status: &[&StateUpdate], status_fn: &[(&StateUpdate, fn(&StateUpdate) -> bool)]) {
-        self.get_statuses();
+    pub fn wait_for_status_type<T>(&mut self, mut good: impl FnMut(&mut Self, T) -> bool) where T: ThreadSafe + Clone {
         loop {
-            let valid = self.is_valid(status);
-            if valid && status.len() > 0 {
-                return;
+            if let Some(data) = self.get_status::<T>() {
+                if good(self, data) {
+                    return;
+                }
             }
-            if self.is_valid_fn(status_fn) && status_fn.len() > 0 {
-                return;
-            }
-            /*if self.state.len() > 1 {
-                log::info!("wait for status! d0eq: {}, d1eq: {}, valid: {}, data0: {:?}, data1: {:?}",
-                    self.state[0].eq(status[0]), self.state[1].eq(status[1]), valid, self.state[0], self.state[1]);
-            } else {
-                log::info!("wait for status! status0len: {}, known len: {}", status.len(), self.state.len());
-            }*///debugging logic issue
-            self.get_statuses_blocking();
+            //10 ms is arbitrary, just to keep us from locking indefinitely
+            self.try_wait_for_next_status(Duration::from_millis(10));
+            self.maybe_panic();
         }
     }
     pub fn is_running(&self) -> bool {
-       Robot::<Target, StateUpdate>::is_running().load(Ordering::SeqCst)
+       Robot::is_running().load(Ordering::SeqCst)
     }
     fn maybe_panic(&self) {
         if !self.is_running() {
             panic_any(OpModeStop::default())
         }
     }
-    //TODO turn this partially into a macro
-    pub fn get_updated_status(&self, status: &StateUpdate) -> Option<&StateUpdate> {
-        self.maybe_panic();
-        for i in 0..self.state.len() {
-            if discriminant(&self.state[i]) == discriminant(&status){
-                return Some(&self.state[i]);
-            }
-        }
-        None
-    }
 }
 pub(crate) trait Interceptor: Send + Sync + RefUnwindSafe {
     fn intercept(&mut self, pack: Packet, send: &Sender<Packet>) -> Option<Packet>;
 }
-struct InterceptorData<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
-    func: Box<dyn SdkPacketHandler<Target, StateUpdate>>,
-    robot: Arc<Robot<Target, StateUpdate>>
+struct InterceptorData {
+    func: Box<dyn SdkPacketHandler>,
+    robot: Arc<Robot>
 }
-impl<Target, StateUpdate> Interceptor for InterceptorData<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
+impl Interceptor for InterceptorData {
     fn intercept(&mut self, pack: Packet, send: &Sender<Packet>) -> Option<Packet> {
         self.func.handle_packet(self.robot.as_ref(), pack, send)
     }
 }
-impl<'a, Target, StateUpdate> InterceptorData<Target, StateUpdate> where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
-    fn new(func: Box<dyn SdkPacketHandler<Target, StateUpdate>>, robot: Arc<Robot<Target, StateUpdate>>) -> InterceptorData<Target, StateUpdate> {
+impl<'a> InterceptorData {
+    fn new(func: Box<dyn SdkPacketHandler>, robot: Arc<Robot>) -> InterceptorData {
         InterceptorData {func, robot}
     }
 }
 
-pub trait SdkPacketHandler<Target, StateUpdate>: Send + Sync + UnwindSafe + RefUnwindSafe where Target: ThreadSafe, StateUpdate: ThreadSafe + Debug {
-    fn handle_packet(&mut self, robot: &Robot<Target, StateUpdate>, packet: Packet, to_reader: &Sender<Packet>) -> Option<Packet>;
+pub trait SdkPacketHandler: Send + Sync + UnwindSafe + RefUnwindSafe {
+    fn handle_packet(&mut self, robot: &Robot, packet: Packet, to_reader: &Sender<Packet>) -> Option<Packet>;
     //msgnum = refnum
-    fn try_get_sender<'a>(&self, robot: &'a Robot<Target, StateUpdate>, addr: u8) -> Option<&'a Sender<Packet>> {
+    fn try_get_sender<'a>(&self, robot: &'a Robot, addr: u8) -> Option<&'a Sender<Packet>> {
         Some(&self.try_get_hub(robot, addr)?.sender)
     }
-    fn try_get_hub(&self, robot: &Robot<Target, StateUpdate>, addr: u8) -> Option<&'static LynxHub> {
+    fn try_get_hub(&self, robot: &Robot, addr: u8) -> Option<&'static LynxHub> {
         if robot.hub_0.module.module_addr == addr {
             Some(&robot.hub_0)
         } else if let Some(hub) = robot.hub_1.as_ref() {
@@ -514,5 +471,35 @@ pub trait SdkPacketHandler<Target, StateUpdate>: Send + Sync + UnwindSafe + RefU
 pub struct OpModeStop {}
 
 
-pub trait ThreadSafe : Send + UnwindSafe + Sync + RefUnwindSafe + Clone + PartialEq + 'static {}
-impl<T: RefUnwindSafe + Send + UnwindSafe + Sync + Clone + PartialEq + 'static> ThreadSafe for T {}
+impl<T> ThreadSafe for T
+where
+    T: Clone + PartialEq + Send + Sync + 'static,
+{
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn clone_box(&self) -> Box<dyn ThreadSafe> {
+        Box::new(self.clone())
+    }
+    fn eq_box(&self, other: &dyn ThreadSafe) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<T>()
+            .map_or(false, |a| a == self)
+    }
+}
+
+// You also need as_any for downcasting
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use unsafe_any::UnsafeAnyExt;
+
+pub trait ThreadSafe: Send + Sync + 'static {
+    fn as_any(&self) -> &dyn Any;
+    fn clone_box(&self) -> Box<dyn ThreadSafe>;
+    fn eq_box(&self, other: &dyn ThreadSafe) -> bool;
+}
+pub use unsafe_any;
+unsafe impl UnsafeAnyExt for dyn ThreadSafe {
+
+}

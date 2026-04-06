@@ -1,18 +1,14 @@
-use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
-use jni::{jni_sig, jni_str, AttachGuard, Env};
-use jni::descriptors::Desc;
-use jni::errors::{Error, ThrowRuntimeExAndDefault};
-use jni::objects::{GlobalRef, JClass, JClassLoader, JObject, JString, JValue};
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use jni::{jni_sig, jni_str, Env};
+use jni::errors::{Error};
+use jni::objects::{JClass, JClassLoader, JObject, JString, JValue};
 use jni::refs::Global;
-use jni::signature::JavaType;
 use jni::strings::JNIStr;
-use log::log;
 use crate::{catch, ElapsedTimer, MovingAverage, BLAZEFTC_CLASS, JAVA_VM};
 
 //note: "timer" is mostly pointless debug code sorry
@@ -104,7 +100,7 @@ impl Telemetry {
         timer.start();
         let mut data = match rx.recv_timeout(Duration::from_millis(62)) { //16 hz. ds processes at 4 hz so this means you do get updated data
             Ok(it) => {Some(it)}
-            Err(it) => {None}
+            Err(_) => {None}
         };
         if rx.len() > 0 {
             //log::info!("telemetry rx size: {}", rx.len());
@@ -247,7 +243,7 @@ pub struct TelemetryTimers {
     last_submitted: ElapsedTimer
 }
 impl TelemetryTimers {
-    fn new(data: &mut Vec<TelemetryData>) -> TelemetryTimers {
+    fn new(_data: &mut Vec<TelemetryData>) -> TelemetryTimers {
         //data.push(TelemetryData::new_f64("telemetry avg wait".to_string(), 0.0));
         //data.push(TelemetryData::new_f64("telemetry avg new data".to_string(), 0.0));
         //data.push(TelemetryData::new_f64("telemetry avg publish".to_string(), 0.0));
@@ -277,7 +273,7 @@ impl TelemetryTimers {
     fn need_to_send(&self) -> bool {
         self.last_submitted.duration().subsec_millis() > 62//16 hz
     }
-    fn push(&self, data: &mut Vec<TelemetryData>) {
+    fn push(&self, _data: &mut Vec<TelemetryData>) {
         //data[0].data = TelemetryType::F64(self.wait_time_avg.avg() as f64);
         //data[1].data = TelemetryType::F64(self.new_data_time_avg.avg() as f64);
         //data[2].data = TelemetryType::F64(self.publish_time_avg.avg() as f64);
