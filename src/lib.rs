@@ -7,7 +7,7 @@ pub extern crate crossbeam_channel;
 pub extern crate jni;
 //pub extern crate self as blaze_ftc;
 
-use jni::sys::{jboolean, jbyte, jbyteArray, jdouble, jstring};
+use jni::sys::{jboolean, jbyte, jbyteArray, jdouble, jstring, va_list};
 use std::thread::sleep;
 
 /*fn unwrap<T>(x: Option<T>) -> T where T: Sized
@@ -26,6 +26,7 @@ use crate::threads::{read::generate_read_threads, send::generate_write_threads};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 //use serial2::{CharSize, FlowControl, Parity, SerialPort, Settings, StopBits};
 use std::backtrace::Backtrace;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::ops::{Add, Div, Mul, Sub};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
@@ -345,8 +346,27 @@ static SEND_PROPERTY_CHANNELS: OnceLock<(Sender<(String, String)>, Receiver<(Str
 pub(crate) fn get_property_channels() -> &'static (Sender<(String, String)>, Receiver<(String, String)>) {
     SEND_PROPERTY_CHANNELS.get_or_init(|| unbounded())
 }
+static PROPERTIES_HASHMAP: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+fn get_prop_map() -> &'static Mutex<HashMap<String, String>> {
+    PROPERTIES_HASHMAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub(crate) fn put_prop(key: String, value: String) -> Option<String> {
+    get_prop_map().lock().unwrap().insert(key, value)
+}
+pub(crate) fn get_prop(key: &str) -> Option<String> {
+    Some(get_prop_map().lock().unwrap().get(key)?.clone())
+}
+pub(crate) fn get_property_names() -> Vec<String> {
+    get_prop_map().lock().unwrap().keys().map(|it| it.clone()).collect()
+}
+pub(crate) fn properties_contains(key: &str) -> bool {
+    get_prop_map().lock().unwrap().contains_key(key)
+}
+pub(crate) fn reset_properties() {
+    get_prop_map().lock().unwrap().clear()
+}
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_send_property(
+pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_sendProperty(
     mut env: EnvUnowned,
     _class: JClass,
     key: JString,

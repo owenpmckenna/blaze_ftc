@@ -178,7 +178,7 @@ impl Telemetry {
         Ok(())
     }
 }
-fn get_class_loader<'a>(env: &mut Env<'a>, obj: &JObject<'a>) -> JClassLoader<'a> {
+pub(crate) fn get_class_loader<'a>(env: &mut Env<'a>, obj: &JObject<'a>) -> JClassLoader<'a> {
     let class_obj: JObject = env.call_method(obj, jni_str!("getClass"), jni_sig!("()Ljava/lang/Class;"), &[])
         .expect("cmuc to get class fail")
         .l().expect("could not get obj from class get call");
@@ -188,7 +188,7 @@ fn get_class_loader<'a>(env: &mut Env<'a>, obj: &JObject<'a>) -> JClassLoader<'a
     JClassLoader::cast_local(env, class_loader).expect("could not cast classloader")
     //class_loader
 }
-fn load_class<'a>(env: &mut Env<'a>, class_loader: &JClassLoader<'a>, class_name: &str) -> JClass<'a> {
+pub(crate) fn load_class<'a>(env: &mut Env<'a>, class_loader: &JClassLoader<'a>, class_name: &str) -> JClass<'a> {
     let class_name = env.new_string(class_name).expect("could not get jstring");
     class_loader.load_class(env, class_name).expect("could not load class")
 }

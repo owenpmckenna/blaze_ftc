@@ -139,7 +139,7 @@ impl PinpointI2C {
         self.write_register(HOrientation, heading_rad)
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PinpointSnapshot {
     pub device_status: i32,
     pub loop_time: i32,
@@ -177,6 +177,22 @@ impl PinpointSnapshot {
             y_velocity,
             h_velocity,
         }
+    }
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::with_capacity(40);
+
+        data.extend_from_slice(&self.device_status.to_le_bytes());
+        data.extend_from_slice(&self.loop_time.to_le_bytes());
+        data.extend_from_slice(&self.x_encoder_position.to_le_bytes());
+        data.extend_from_slice(&self.y_encoder_position.to_le_bytes());
+        data.extend_from_slice(&(self.x_position / Self::MM_TO_IN).to_le_bytes());
+        data.extend_from_slice(&(self.y_position / Self::MM_TO_IN).to_le_bytes());
+        data.extend_from_slice(&self.heading.to_le_bytes());
+        data.extend_from_slice(&(self.x_velocity / Self::MM_TO_IN).to_le_bytes());
+        data.extend_from_slice(&(self.y_velocity / Self::MM_TO_IN).to_le_bytes());
+        data.extend_from_slice(&self.h_velocity.to_le_bytes());
+
+        data
     }
 }
 #[repr(u8)]

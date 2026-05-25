@@ -6,7 +6,7 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 use crossbeam_channel::{Sender, Receiver, select, unbounded, never};
-use crate::{catch};
+use crate::{catch, get_prop, get_property_channels, get_property_names, properties_contains, put_prop, reset_properties};
 use crate::control::gamepad::Gamepad;
 use crate::control::hardware::{LynxHub};
 use crate::control::hardware::UnderlyingHw::DirectProxy;
@@ -22,6 +22,8 @@ pub struct Robot {
     hub_0_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
     hub_1_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
     gp_handlers: Vec<Box<Mutex<dyn GamepadHandler>>>,
+    property_handlers: Vec<Box<Mutex<dyn PropertyHandler>>>,
+    kill_signal_txs: Vec<Sender<()>>,
     gamepad_receiver: &'static Receiver<(Vec<u8>, Vec<u8>)>,
     pub telemetry: &'static Telemetry,
     initializer: Option<fn(&mut Robot) -> ()>,
@@ -54,6 +56,8 @@ impl Robot {
             hub_0_handlers: vec![],
             hub_1_handlers: vec![],
             gp_handlers: vec![],
+            property_handlers: vec![],
+            kill_signal_txs: vec![],
             gamepad_receiver,
             telemetry,
             initializer: Some(initializer),
@@ -168,6 +172,14 @@ impl Robot {
                 let data = msg.unwrap();
                 self.handle_packet(data);
             }
+            recv(get_property_channels().1) -> msg => {
+                let (key, value) = msg.unwrap();
+                log::trace!("got new property - key `{}`, value `{}`", key, value);
+                self.property_handlers.iter().for_each(|it| {
+                    it.lock().unwrap().update(&self, &key, &value);
+                });
+                put_prop(key, value);
+            }
             recv(Self::kill_channel().1) -> _ => {
                 log::info!("STOPPING OPMODE!");
                 //should stop us from running
@@ -181,6 +193,10 @@ impl Robot {
                         proxy.remove_interceptors();
                     }
                 }
+                for i in &self.kill_signal_txs {
+                    let _ = i.send(());//just swallow any disconnect errors
+                }
+                reset_properties();
             }
         }
     }
@@ -246,6 +262,9 @@ impl Robot {
     }
     pub fn add_gp_handler<D>(&mut self, func: D) where D: GamepadHandler + 'static {
         self.gp_handlers.push(Box::new(Mutex::new(func)));
+    }
+    pub fn add_property_handler<D>(&mut self, func: D) where D: PropertyHandler + 'static {
+        self.property_handlers.push(Box::new(Mutex::new(func)));
     }
     pub fn add_i2c_device<Device: 'static, T: 'static>(&mut self, device: Box<Device>, handlers: Vec<Box<dyn I2CDeviceHandler<Device, T>>>) where Device: I2CDevice<T> {
         let both = I2CDevicePair { device, handlers };
@@ -323,12 +342,32 @@ impl Robot {
             }
         } else { panic!("could not find any real proxies!") }
     }
+    pub fn get_property(&self, key: &str) -> Option<String> {
+        get_prop(key)
+    }
+    pub fn get_properties(&self, key: &str) -> Vec<String> {
+        get_property_names()
+    }
+    pub fn check_property_names(&self, keys: &[&str]) -> bool {
+        for i in keys {
+            if !properties_contains(*i) {
+                return false
+            }
+        }
+        true
+    }
+    pub(crate) fn add_kill_signal_sender(&mut self, rx: Sender<()>) {
+        self.kill_signal_txs.push(rx);
+    }
 }
 pub trait GamepadHandler: Send + UnwindSafe {
     fn update(&mut self, robot: &Robot, gp0: &Gamepad, gp1: &Gamepad);
 }
 pub trait BulkReadHandler: Send + UnwindSafe {
     fn update(&mut self, robot: &Robot, data: &LynxGetBulkDataResponseData);
+}
+pub trait PropertyHandler: Send + UnwindSafe {
+    fn update(&mut self, robot: &Robot, key: &str, value: &str);
 }
 pub struct MainThread {
     target: HashMap<TypeId, Box<dyn ThreadSafe>>,
