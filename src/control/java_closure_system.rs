@@ -24,8 +24,11 @@ impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot> for JNICrossPinpointHandler
         match self.resend_rx.try_recv() {
             Ok(it) => {if self.sending && !it { self.sending = false; }}
             Err(it) => {
-                log::info!("resend_rx null! err: {}", it);
-                //self.sending = false; //TODO uncomment
+                if it.is_disconnected() {
+                    //if not disconnected it errored because there's nothing in the channel
+                    log::info!("resend_rx null! err: {}", it);
+                    self.sending = false;
+                }
             }
         }
         if self.sending {
@@ -33,7 +36,7 @@ impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot> for JNICrossPinpointHandler
         }
         if let Err(it) =  self.snapshot_tx.send((*data).clone()) {
             log::info!("snapshot tx null!!! {}", it);
-            //self.sending = false;
+            self.sending = false;
         }
         self.first = false;
     }
