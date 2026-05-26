@@ -174,11 +174,10 @@ impl Robot {
             }
             recv(get_property_channels().1) -> msg => {
                 let (key, value) = msg.unwrap();
-                log::trace!("got new property - key `{}`, value `{}`", key, value);
+                log::info!("got new property - key `{}`, value `{}`", key, value);
                 self.property_handlers.iter().for_each(|it| {
                     it.lock().unwrap().update(&self, &key, &value);
                 });
-                put_prop(key, value);
             }
             recv(Self::kill_channel().1) -> _ => {
                 log::info!("STOPPING OPMODE!");

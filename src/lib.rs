@@ -375,6 +375,8 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_sendProperty(
     env.with_env(|env| -> Result<_, jni::errors::Error> {
         let key = key.try_to_string(&env)?;
         let value = value.try_to_string(&env)?;
+        log::info!("got new property! {}, {}", key, value);
+        put_prop(key.clone(), value.clone());
         get_property_channels().0.send((key, value)).expect("could not send property");
         Ok(())
     }).resolve::<ThrowRuntimeExAndDefault>();
