@@ -7,6 +7,7 @@ use jni::errors::Error;
 use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::{jni_sig, jni_str, Env, JValue};
 use std::thread;
+use std::time::Duration;
 use jni::sys::{jbyte, jsize};
 use crate::telemetry::telemetry::{get_class_loader, load_class};
 
@@ -95,7 +96,10 @@ impl JNICrossPinpointHandler {
                     log::info!("java thread got kill signal!");
                     running = false;
                 }
-                recv(snapshot_rx) -> msg => {
+                recv(snapshot_rx) -> mut msg => {
+                    while !snapshot_rx.is_empty() {
+                        msg = snapshot_rx.recv();
+                    }
                     let msg = msg.unwrap();
                     let in_bytes: Vec<jbyte> = msg.to_bytes().into_iter().map(|it| it as jbyte).collect();
                     arr.set_region(env, 0, in_bytes.as_slice())

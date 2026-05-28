@@ -1,7 +1,8 @@
 use std::fmt::{Debug};
+use std::ops::Add;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use num_enum::TryFromPrimitive;
 use crate::control::hardware::{Direction, LynxHub};
 use crate::serialization::command::Command;
@@ -10,6 +11,8 @@ use crate::serialization::lynx_commands::base_lynx_command::{LynxCommand, LynxCo
 use crate::serialization::lynx_commands::lynx_commands::{LynxI2CReadStatusQueryCommandData, LynxI2CWriteReadMultipleBytesCommandData};
 use crate::serialization::packet::Packet;
 use PinpointRegister::*;
+use crate::get_prop;
+use crate::threads::scheduler::schedule_packet;
 
 pub struct PinpointI2C {
     hub: &'static LynxHub,
@@ -87,9 +90,22 @@ impl PinpointI2C {
             bytes_to_read: 40,
             i2c_start_addr: 18,//magic value idk
         });
-        self.add_pif(self.hub.send_lynx_packet(cmd));
+        /*self.add_pif(*/self.hub.send_lynx_packet(cmd)/*)*/;
+
+        self.fire_future_read();
     }
-    fn fire_read(&self) {
+    fn fire_future_read(&self) {
+        log::trace!("firing pinpoint future read req");
+        let cmd = LynxCommand::LynxI2CReadStatusQueryCommand(LynxI2CReadStatusQueryCommandData {i2c_bus: self.bus});
+        let (pack, id) = self.hub.prepare_send_lynx_packet(cmd);
+        self.add_pif(id);
+        let schedule_time = Duration::from_micros(match get_prop("pinpoint2ndDelay") {
+            None => {1010}
+            Some(it) => {it.parse().unwrap_or(1010)}
+        });
+        schedule_packet(Instant::now().add(schedule_time), pack, self.hub);
+    }
+    pub(crate) fn fire_read(&self) {
         log::trace!("firing pinpoint read req");
         let cmd = LynxCommand::LynxI2CReadStatusQueryCommand(LynxI2CReadStatusQueryCommandData {i2c_bus: self.bus});
         self.add_pif(self.hub.send_lynx_packet(cmd));

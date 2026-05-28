@@ -115,16 +115,23 @@ impl LynxHub {
             log::trace!("done waiting on rs485, nm:{}", pck.message_number);
         }
     }
-    pub fn send_packet(&'static self, mut packet: Packet) -> u8 {
+    fn prepare_send_packet(&'static self, mut packet: Packet) -> (Packet, u8) {
         let proxy = self.get_proxy();
         let num = register_packet(&proxy.message_list);
         packet.message_number = num;
         packet.reference_number = num;
         packet.checksum = packet.checksum();
+        (packet, num)
+    }
+    pub fn send_prepared_packet(&'static self, packet: Packet) {
         log::trace!("waiting for packet: d:{} --- {}", packet.dest_module_addr, packet);
         self.notify_send_packet(&packet);
         log::trace!("done waiting for packet: {:?}", packet.dest_module_addr);
         self.sender.send(packet).expect("could not send packet in hub!");
+    }
+    pub fn send_packet(&'static self, packet: Packet) -> u8 {
+        let (packet, num) = self.prepare_send_packet(packet);
+        self.send_prepared_packet(packet);
         num
     }
     pub fn get_proxy(&'static self) -> &'static Proxy {
@@ -135,10 +142,17 @@ impl LynxHub {
     }
     ///construct and then send a lynx command packet. return the message number the response will have
     pub fn send_lynx_packet(&'static self, lynx_command: crate::serialization::lynx_commands::base_lynx_command::LynxCommand) -> u8 {
-        let resp = Command::LynxCommand(LynxCommandData { module: &self.module, command: lynx_command });
+        let resp = LynxCommand(LynxCommandData { module: &self.module, command: lynx_command });
         let packet = Packet::new_full(resp, self.module.module_addr, 0, 0, 0);
         log::trace!("lynx writing packet {}", packet);
         self.send_packet(packet)
+    }
+    ///then call hub.send_prepared_packet(packet);
+    pub fn prepare_send_lynx_packet(&'static self, lynx_command: crate::serialization::lynx_commands::base_lynx_command::LynxCommand) -> (Packet, u8) {
+        let resp = LynxCommand(LynxCommandData { module: &self.module, command: lynx_command });
+        let packet = Packet::new_full(resp, self.module.module_addr, 0, 0, 0);
+        log::trace!("lynx writing packet {}", packet);
+        self.prepare_send_packet(packet)
     }
     pub fn send_motor_command(&'static self, motor: u8, mut power: f32) {
         power = self.get_motor_direction(motor as usize).mult() * power;
