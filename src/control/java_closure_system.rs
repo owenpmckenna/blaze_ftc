@@ -1,8 +1,8 @@
 use crate::control::robot::Robot;
 use crate::serialization::i2c_comms::i2c_device::I2CDeviceHandler;
 use crate::serialization::i2c_comms::pinpoint_i2c::{PinpointI2C, PinpointSnapshot};
-use crate::{BLAZEFTC_CLASS, JAVA_VM};
-use crossbeam_channel::{select, unbounded, Receiver, Sender};
+use crate::{catch, BLAZEFTC_CLASS, JAVA_VM};
+use crossbeam_channel::{select, unbounded, Receiver, Sender, TryRecvError};
 use jni::errors::Error;
 use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::{jni_sig, jni_str, Env, JValue};
@@ -14,20 +14,27 @@ pub struct JNICrossPinpointHandler {
     snapshot_tx: Sender<PinpointSnapshot>,
     resend_rx: Receiver<bool>,
     sending: bool,
-    first: bool
+    datas: usize
 }
 impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot> for JNICrossPinpointHandler {
     fn handle(&mut self, _: &Robot, device: &mut Box<PinpointI2C>, data: &PinpointSnapshot) {
-        if self.first {
-            log::info!("got a pinpoint data!")
+        if self.datas < 5 {
+            log::info!("got a pinpoint data! {}", self.datas)
         }
         match self.resend_rx.try_recv() {
-            Ok(it) => {if self.sending && !it { self.sending = false; }}
+            Ok(it) => {
+                if self.sending && !it {
+                    self.sending = false;
+                    log::info!("pinpoint ordered to stop")
+                }
+            }
             Err(it) => {
                 if it.is_disconnected() {
                     //if not disconnected it errored because there's nothing in the channel
-                    log::info!("resend_rx null! err: {}", it);
-                    self.sending = false;
+                    //on the other hand. if the channel was dc normally, it should have had a normal
+                    //false in it which would get processed first so we can ignore this error
+                    log::info!("resend_rx null! err: {} ignore", it);
+                    //self.sending = false;
                 }
             }
         }
@@ -35,10 +42,10 @@ impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot> for JNICrossPinpointHandler
             device.fire_bulk_read_request();
         }
         if let Err(it) =  self.snapshot_tx.send((*data).clone()) {
-            log::info!("snapshot tx null!!! {}", it);
-            self.sending = false;
+            log::info!("snapshot tx null!!! ignoring... {}", it);
+            //self.sending = false;
         }
-        self.first = false;
+        self.datas += 1;
     }
     //o=outer, i=inner
 }
@@ -80,17 +87,18 @@ impl JNICrossPinpointHandler {
 
         let arr = env.byte_array_from_slice(&vec![0b0; 40])
             .expect("could not create java bytes - pinpoint jni");
-        loop {
+        let mut running = true;
+        while running {
             select! {
                 recv(kill_rx) -> msg => {
                     let _ = resend_tx.send(false);
                     log::info!("java thread got kill signal!");
-                    return;
+                    running = false;
                 }
                 recv(snapshot_rx) -> msg => {
                     let msg = msg.unwrap();
                     let in_bytes: Vec<jbyte> = msg.to_bytes().into_iter().map(|it| it as jbyte).collect();
-                    arr.set_region(env, in_bytes.len() as jsize, in_bytes.as_slice())
+                    arr.set_region(env, 0, in_bytes.as_slice())
                         .expect("could not set region in pinpoint 0");
 
                     let output = env.call_static_method(&blazeftc_class, jni_str!("sendBytes"),
@@ -102,17 +110,18 @@ impl JNICrossPinpointHandler {
                         .expect("could not get bytes - pinpoint jni");
                     let byte_len = output.len(env).expect("could not get byte len");
                     let mut bytes = vec![0b0 as jbyte; byte_len];
-                    output.get_region(env, byte_len as jsize, bytes.as_mut_slice()).expect("");
+                    output.get_region(env, 0, bytes.as_mut_slice()).expect("could not get region");
                     env.delete_local_ref(output);
                     if bytes.len() == 1 && (bytes[0] as u8) == 0 {
                         let _ = resend_tx.send(false);
                         log::info!("got out bytes 0!!!");
-                        return;
+                        running = false;
                     }
                     //so... we shut down if we get a kill channel signal *or* java sends us a [0] array.
                 }
             }
         }
+        log::info!("java thread returning (pinpoint) dc: {:?}/{:?}", kill_rx.try_recv(), snapshot_rx.try_recv());
     }
     fn new(name: String, robot: &mut Robot) -> JNICrossPinpointHandler {
         log::info!("creating new jni cross handler!");
@@ -121,14 +130,17 @@ impl JNICrossPinpointHandler {
         let (kill_tx, kill_rx) = unbounded();
         robot.add_kill_signal_sender(kill_tx);
         let _ = thread::spawn(move || {
-            log::info!("spawning java talk thread...");
-            let vm = JAVA_VM.get().unwrap();
-            vm.attach_current_thread(move |env: &mut Env| -> Result<(), Error> {
-                Self::java_thread(env, name, resend_tx, snapshot_rx, kill_rx);
-                Ok(())
-            }).unwrap();
-            log::info!("JAVA THREAD EXITED");
+            catch(move || {
+                log::info!("spawning java talk thread...");
+                let vm = JAVA_VM.get().unwrap();
+                log::info!("java thread result: {:?}", vm.attach_current_thread(move |env: &mut Env| -> Result<(), Error> {
+                    Self::java_thread(env, name, resend_tx, snapshot_rx, kill_rx);
+                    log::info!("java thread shutting down...");
+                    Ok(())
+                }));
+                log::info!("JAVA THREAD EXITED");
+            }, "java closure thread");
         });
-        JNICrossPinpointHandler { snapshot_tx, resend_rx, sending: true, first: true }
+        JNICrossPinpointHandler { snapshot_tx, resend_rx, sending: true, datas: 0 }
     }
 }

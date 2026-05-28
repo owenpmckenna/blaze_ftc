@@ -140,6 +140,7 @@ impl PinpointI2C {
     }
 }
 #[derive(Debug, Copy, Clone)]
+#[derive(PartialEq)]
 pub struct PinpointSnapshot {
     pub device_status: i32,
     pub loop_time: i32,
