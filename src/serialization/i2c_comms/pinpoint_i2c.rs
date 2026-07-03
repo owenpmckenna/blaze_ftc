@@ -1,3 +1,4 @@
+use std::error::Error;
 use std::fmt::{Debug};
 use std::ops::Add;
 use std::sync::Mutex;
@@ -7,7 +8,7 @@ use num_enum::TryFromPrimitive;
 use crate::control::hardware::{Direction, LynxHub};
 use crate::serialization::command::Command;
 use crate::serialization::i2c_comms::i2c_device::{I2CDevice, I2CDeviceResult, ToLeBytes};
-use crate::serialization::lynx_commands::base_lynx_command::{LynxCommand, LynxCommandData};
+use crate::serialization::lynx_commands::base_lynx_command::LynxCommand;
 use crate::serialization::lynx_commands::lynx_commands::{LynxI2CReadStatusQueryCommandData, LynxI2CWriteReadMultipleBytesCommandData};
 use crate::serialization::packet::Packet;
 use PinpointRegister::*;
@@ -46,12 +47,12 @@ impl I2CDevice<PinpointSnapshot> for PinpointI2C {
                 }
             } else if let Command::Nack(reason) = &packet.payload_data {
                 log::trace!("got pinpoint PIF {} w/ NACK", packet.reference_number);
-                //i2c writing not done. consume and send another packet
+                //i2c writing not done (fire_read failed). consume and send another packet
                 self.fire_read();
                 return I2CDeviceResult::Nack(reason.to_string())
             } else if let Command::Ack(_) = &packet.payload_data {
                 log::trace!("got pinpoint PIF {} w/ ACK", packet.reference_number);
-                //i2c writing not done. consume and send another packet
+                //i2c writing done (fire_bulk_read succeeded). consume and send another packet
                 self.fire_read();
                 return I2CDeviceResult::Nack("".to_string())
             }
@@ -82,6 +83,19 @@ impl PinpointI2C {
             true
         } else { false }
     }
+    fn get_2nd_delay() -> Option<u64> {
+        match get_prop("pinpoint2ndDelay") {
+            None => { Some(1010) }
+            Some(it) => {
+                match it.parse() {
+                    Ok(it) => Some(it),
+                    Err(_) => {
+                        None //if null/empty, don't use this feature
+                    },
+                }
+            }
+        }
+    }
     pub fn fire_bulk_read_request(&self) {
         log::trace!("firing pinpoint bulk read req");
         let cmd = LynxCommand::LynxI2CWriteReadMultipleBytesCommand(LynxI2CWriteReadMultipleBytesCommandData {
@@ -90,20 +104,24 @@ impl PinpointI2C {
             bytes_to_read: 40,
             i2c_start_addr: 18,//magic value idk
         });
-        /*self.add_pif(*/self.hub.send_lynx_packet(cmd)/*)*/;
+        let pif = self.hub.send_lynx_packet(cmd);
 
-        self.fire_future_read();
+        if let Some(sched_time) = Self::get_2nd_delay() {
+            self.fire_future_read(sched_time);
+        } else {
+            self.add_pif(pif);
+        }
     }
-    fn fire_future_read(&self) {
+    fn fire_future_read(&self, schedule_time: u64) {
         log::trace!("firing pinpoint future read req");
         let cmd = LynxCommand::LynxI2CReadStatusQueryCommand(LynxI2CReadStatusQueryCommandData {i2c_bus: self.bus});
         let (pack, id) = self.hub.prepare_send_lynx_packet(cmd);
         self.add_pif(id);
-        let schedule_time = Duration::from_micros(match get_prop("pinpoint2ndDelay") {
-            None => {1010}
-            Some(it) => {it.parse().unwrap_or(1010)}
-        });
-        schedule_packet(Instant::now().add(schedule_time), pack, self.hub);
+        if schedule_time == 0 {//if it's 0 just send it now!
+            self.hub.send_prepared_packet(pack);
+        } else {
+            schedule_packet(Instant::now().add(Duration::from_micros(schedule_time)), pack, self.hub);
+        }
     }
     pub(crate) fn fire_read(&self) {
         log::trace!("firing pinpoint read req");

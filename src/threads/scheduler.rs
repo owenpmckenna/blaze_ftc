@@ -41,21 +41,26 @@ impl Scheduler {
         let packet_rx = self.packet_rx.clone();
         thread::spawn(move || {
             catch(move || {
-                Self::run_scheduler(packet_rx);
+                Self::run_scheduler(packet_rx, id);
             }, &format!("scheduler thread {}", id));
         });
     }
-    fn run_scheduler(packet_rx: Receiver<(Instant, Packet, &'static LynxHub)>) {
+    fn run_scheduler(packet_rx: Receiver<(Instant, Packet, &'static LynxHub)>, id: usize) {
         let spin_sleeper = spin_sleep::SpinSleeper::new(100_000)
             .with_spin_strategy(spin_sleep::SpinStrategy::YieldThread);
+        let mut first = true;
         loop {
             let (ttr, packet, hub) = packet_rx.recv()
                 .expect("scheduler rx disconnected?");
+            if first {
+                println!("Scheduler thread {} just got its first packet!", id);
+            }
             spin_sleeper.sleep_until(ttr);
 
             hub.send_prepared_packet(packet);
 
             SCHEDULER_PACKET_COUNT.fetch_sub(1, Ordering::SeqCst);
+            first = false;
         }
     }
 }

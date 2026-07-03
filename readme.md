@@ -5,56 +5,132 @@ Designed for speed, it offers the fastest possible loop times, thanks to it's di
 It is capable of running in the context of a regular opmode, and it maintains compatibility with the FTC SDK, which can still issue commands while the BlazeFTC opmode is running.
 As of now, it should be considered to be in beta. Most of the code is there, but there's some bugs and design choices I would like input on, among other things. Actionable suggestions/pull requests are appreciated.
 
-The quickstart can be found [here](https://github.com/owenpmckenna/BlazeFtcQuickstart) but please read the explanations below before you start. (unless you're here for Neutrino, in which case you're probably fine)
+If you have questions, please check out [robotics.md](https://github.com/owenpmckenna/blaze_ftc/blob/master/robotics.md) which explains what this project is actually doing.
+If you want to write Rust opmodes, the Rust quickstart can be found [here](https://github.com/owenpmckenna/BlazeFtcQuickstart), but it's not needed to get speed boosts.
+Usage for Blaze in Java/Kotlin is explained below. Note that there is a normal way of using Blaze, which will require you to extend Blaze's DummyPlugOpMode, which itself extends LinearOpMode.
+The lower level usage will let you extend whichever OpMode class you want, but you will need to write more code and change a few more things in your software. 
+My hope is that other ergonomics project maintainers (NextFTC, SolversLib, etc.) will consider integrations to make usage easier for smaller/newer/less experienced teams. I will provide assistance if you need help making the integration.
 
-### What's going on?
+### Normal Usage
+First, add `implementation("dev.anygeneric:blazeftc:0.1.38")` and to your gradle dependencies.
+You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.38'`. Note that currently I only officially support Pedro 2 as of now. 
+If you are familiar with Pedro 3, Roadrunner, or any other pathing library, ping me @anygenericname and I'll get you a dependency (or help you make your own) in like 15 minutes max (it's very easy), or look at how the Pedro 2 version is implemented.
 
-When a BlazeFTC opmode is started, we use Java's reflection APIs to obtain references to the device file (`/dev/ttyS1`) that the Control Hub Android Board uses to communicate with the Lynx Module (the board with the motor drivers).
-We replace it with a proxy Input/OutputStream, backed by JNI calls to our Rust code which allows the FTC SDK to continue communicating. We deserialize and reserialize all the frames, which is how the protocol was reverse engineered and tested in the first place.
+Next, add the following class to your project. An explanation of the functions used is contained within the class in comments.
+```java
+import com.pedropathing.follower.Follower;
+import com.pedropathing.geometry.BezierLine;
+import com.pedropathing.geometry.Pose;
+import com.pedropathing.paths.Path;
+import com.qualcomm.hardware.lynx.LynxModule;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.util.ElapsedTime;
 
-IO in the normal SDK is, from a fundamental level, blocking. Directly controlling the hardware allows us to throw that out the window, and send commands at speeds apparently limited only by the UART baud rate.
-In testing, an opmode with 4 motor PID loops was running at ~500hz, just to give an idea of the speed we can accomplish here.
+import org.firstinspires.ftc.robotcore.external.Telemetry;
+import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 
-### Ok, but why?
+import dev.anygeneric.blazeftc_pedro.PedroSingleDataLocalizer;
 
-Speed. Most normal opmodes run at ~30hz, even with bulk reads enabled. Meanwhile, a moderately optimized BlazeFTC opmode should be able to run at about ~200hz.
-This is significant for all manner of control algorithms, which at a broad level all need to react to error in the real world. Whether this error is from gravity/friction, motor inaccuracy, someone being in your way, etc., BlazeFTC can react 5 or more times faster to real world conditions.
-Also, of course, we get to code in Rust now. Whether you think that's a good thing is up to you (personally I think it's awesome but I'm the kind of person who will spend their entire winter break writing something like this).
+@TeleOp(name = "Example Pedro High Speed Localization")
+public class ExamplePedroSpeedLocalization extends DummyPlugOpMode {
+    @Override
+    public void runOpModeInBlaze() {
+        //this does several important things internally. You *must* call it before anything else.
+        //You can pass whatever telemetry object in you want, including the split ones that go to a web dashboard.
+        //However, you need to use the object it returns, and you should under no circumstances replace it with
+        //`telemetry = initializeBlazeFTC(telemetry);` which replaces the OpMode's telemetry and breaks everything.
+        //Feel free to try and fix this, but it's out of scope for me, sorry.
+        Telemetry tele = initializeBlazeFTC(telemetry);
+        //Normal manual cache setup.
+        for (LynxModule i : hardwareMap.getAll(LynxModule.class))
+            i.setBulkCachingMode(LynxModule.BulkCachingMode.MANUAL);
+        //this sends motor cmds directly to blaze, skipping Java serialization completely
+        //it reaches into the hwMap to replace the motors there so don't pull the motors out/init pedro before calling it
+        engageMotorAcceleration();
+        //we create the follower. NOTE that this uses the pinpoint java driver to set all your settings and offsets
+        Follower follower = Constants.createFollower(hardwareMap);
+        waitForStart();
+        ElapsedTime elt = new ElapsedTime();
+        //the closure you pass will be called every time we get new data.
+        //you may call `setup` at any time during the opmode, but it *must* be called before runBlazeFTC(0);
+        //if you call it later, it will be ignored.
+        PedroSingleDataLocalizer.setup(follower, () -> {
+            tele.addData("pedro loop time (ms)", elt.milliseconds());
+            elt.reset();
+            follower.update();
+            tele.addData("x,y", follower.getPose().getX() + ", " + follower.getPose().getY());
+        });
+        //this is a test path. Replace it with your team's logic
+        follower.followPath(new Path(new BezierLine(new Pose(0, 0), new Pose(10, 0))));
+        //this turns control over to Blaze. The 0 tells blaze to use Neutrino, not a different rust opmode.
+        //If you wrote other rust opmodes, you would start them instead by passing in a different number.
+        //You absolutely have to call this some time after waitForStart
+        runBlazeFTC(0);
 
-### Robot Framework
+        //This should be replaced with your own code. 
+        ElapsedTime elt2 = new ElapsedTime();
+        while (!isStopRequested()) {
+            for (LynxModule i : hardwareMap.getAll(LynxModule.class))
+                i.clearBulkCache();
+            //it doesn't matter what you do here
+            sleep(20);
+            tele.addData("main loop time (ms)", elt2.milliseconds());
+            elt2.reset();
+            tele.update();
+        }
+    }
+}
+```
 
-While you *can* write bare opmodes, I highly suggest that you use the Robot framework. At a fundamental level, it was designed for speed, and the constraints put on it are derived from that objective.
-It is reactive, which means that as soon as we are made aware of new hardware state, a handler is called. This is a significant departure from the SDK method of a loop which sequentially executes commands, but it is also the fastest option, which is why I selected it.
-Additionally, it is designed to be multithreaded. Multiple handlers can (or will, the design is there but I don't have it connected to a threadpool yet) run at the same time, so that one doesn't block another. In pursuit of this goal, the only mutable state handlers are given access to is their own, and all hardware writes (there are no reads, only data requests which will be handed to a handler later)
-are non-blocking and backed by crossbeam channels (which affords immutable global state).
+### Lower Level Usage
+Lower level usage lets you extend whatever class you want, but it requires calling some functions more directly, and also there are footguns to be aware of.
 
-The problem of needing cross-handler mutable state is solved with a global "main" thread, tasked with giving targets to the handlers, and receiving messages ("state updates") from the handlers.
-Both the targets and updates are generic types, and the updates must be an enum type. State updates are effectively stored in a map, with the keys being the enum's discriminant (think: Some vs None, with what Some contains being ignored). This allows different handlers to submit state information separately, with the enum instance's contents being updated in the main thread's view of state.
+The DummyPlugOpMode class below should be used as a template. Call the BlazeFTC and BlazeDummyPlug methods directly instead of the ones in the OpMode.
 
-Currently, there are 6 places to have code executed:
-1. Gamepad handler: gamepads are considered hardware devices. Ergo, you can create handlers for them. I'm considering reworking this, but due to the immutable state requirements if you want to change targets from a gp handler, just send the target struct in a state update to be reflected back as is shown in the mecanum_with_brakes example.
-2. Bulk read handler: this is currently the only robot hw read available outside of i2c (see roadmap) and it's pretty self-explanatory. Note: you shouldn't do heavy computation here because it's run every 1-3 ms.
-3. I2C handlers: also self-explanatory. They're the only "stateful" hw device so they're handled a bit differently than bulk reads. Your handlers are tied to a Robot-type-agnostic Driver struct which gives you useful data and methods.
-4. Packet interceptor: the basis for the Neutrino proxy, these handlers are called whenever a packet is sent to hw by the sdk. They can mutate or consume packets, send fake responses, and run in the same context as the other handlers. They are also useful for debugging.
-5. Main thread: this thread is designed to block waiting for a certain state to be reached (eg. flywheel is up to speed), before sending out new targets (servo lifted). It is explicitly designed for autonomous opmodes, and it's blocking, which is why we also have:
-6. Update processors. These run before the main thread sees new state information, and can be used to react to state while the main thread is blocking. It can be used in teleops as well, to communicate Gamepad state to bulk read handlers or anything else you want to do.
-
-### Neutrino Proxy
-
-The "Neutrino Proxy" is an extension to BlazeFTC that is capable of drastically improving the performance of Java/Kotlin code. It does this by taking advantage of BlazeFTC's ability to proxy commands from the SDK on to the hardware while simultaneously running Rust code.
-Here, it intercepts commands and immediately gives the SDK an ACK message every time it sees a motor set power command, passing on the real command to hardware. This allows your JVM code to run much faster, without having to write any Rust code. It can be found in the Quickstart, which provides
-instructions on its use. Because we are in between the SDK and the hardware, we can optimize more aggressively and this actually allows proxied code to run faster than was possible with Photon (this extension's namesake) as I understand it (let me know if I'm wrong), with a basic mecanum opmode running in ~0.5 ms, and it is fully compatible with the latest versions of the FTC SDK.
-Note that writing Neutrino was not considered the goal of BlazeFTC, but it was useful and relatively trivial to implement on top of existing code so I did so anyway.
+The most important thing, however, is that you call `BlazeDummyPlug.closeBlazeFTC()` after the opmode is done. 
+To make sure it's called, do it in a `finally` block wrapping normal user code. 
+Failing to call this may force you to restart the robot should you want to start a new opmode.
+```java
+abstract class DummyPlugOpMode : LinearOpMode() {
+    fun sendPropertyToRust(key: String, value: String) {
+        BlazeFTC.sendProperty(key, value);
+    }
+    fun engageMotorAcceleration() {
+        BlazeDummyPlug.engageMotorAccel(hardwareMap)
+    }
+    fun engagePinpointAcceleration(ppd: GoBildaPinpointDriver, acceptor: (PositionData) -> Unit) {
+        BlazeDummyPlug.engagePinpointAcceleration(ppd, acceptor)
+    }
+    final fun initializeBlazeFTC(userTelemetry: Telemetry) : Telemetry =
+        BlazeDummyPlug.initializeBlazeFTC(telemetry, hardwareMap)
+    fun runBlazeFTC(toRun: Int) {
+        BlazeFTC.run(toRun)
+    }
+    fun updateGamepads() {
+        BlazeFTC.gamepad(gamepad1.toByteArray(), gamepad2!!.toByteArray())
+    }
+    abstract fun runOpModeInBlaze();
+    override fun runOpMode() {
+        try {
+            runOpModeInBlaze()
+        } catch (e: Throwable) {
+            println("BlazeFTC's Dummy Plug OpMode caught $e")
+            e.printStackTrace()
+            throw e
+        } finally {
+            println("Closing BlazeFTC")
+            BlazeDummyPlug.closeBlazeFTC()
+        }
+    }
+}
+```
 
 ### Roadmap
 
 BlazeFTC should be considered to be in beta. It works but it's missing some features. Most things Neutrino depends on are fine but actual usability in BlazeFTC isn't quite there (eg. no pathing library exists yet, and the ergonomics aren't great all around but I'm working on it).
 
 Anyway, in no particular order, several things need to be implemented/tested:
-+ Expansion Hub via USB. Expansion hubs over RS485 are supported, and most of the code for USB support is present, but there's some edge cases I haven't gotten around to fixing and for now, they are on hold.
-+ Servos. These are controlled by PWM and different servos seem to want different ranges. The code is there for the default case, I have no idea of it will work or not. I'm like, 20% confident these will work so I personally wouldn't touch them. If you would like to help me implement them, that would be much appreciated.
-+ More I2C Devices. Pinpoints are implemented and work, but they're the only ones.
-+ Pathing. For obvious reasons, JVM pathing libraries cannot be used in BlazeFTC. We need a builtin pathing library. While this is a high priority obviously, I am not the best equipped to create it and help would be appreciated in pretty much any form. (in progress. I have written a basic Drive Vector algorithm which is capable of following simple lines)
-+ Configurables. Currently the only way to change runtime parameters (other than the opmode number) is by recompiling. I would like to integrate with Panels and/or acme dashboard, but for obvious reasons this is made difficult by the nature of the project. I need to be able to dynamically create configurables at runtime, so go yell at Lazar until he adds the methods. /s
-+ Support for languages other than rust. It is possible to expose a C api from Rust, and pretty much every other language can communicate with a C api. It is conceivable that we could embed/serve an api to C, MicroPython, WASM (so JS, C#, Go, etc.), LUA, and a bunch of others. I'm not sure who would find that useful, but it is within the realm of possibility.
-+ There is a known bug where, apparently randomly, the FTC SDK fails to continue to communicate with the Lynx Module for a short period of time after BlazeFTC starts. It happens maybe 10% of the time, I expect it to be a small fix (it happens because the SDK read thread isn't locked when we take over. Probably.) It causes an error message to be displayed but has no other effects as far as I am aware. (update: almost definitely fixed)
++ Expansion Hub via USB. Expansion hubs over RS485 are supported, and the architecture for USB support is mostly present. Currently, you need to use an RS485 cable. This is a high priority for fixing I just haven't had the ability to test it.
++ Servos (in Rust). These are controlled by PWM and different servos seem to want different ranges. The code is there for the default case, I have no idea of it will work or not. I'm like, 20% confident these will work so I personally wouldn't touch them. If you would like to help me implement them, that would be much appreciated.
++ More I2C Devices. Pinpoints are implemented and work, but they're the only ones. Implementing more is not too hard, but I haven't had the chance and I don't have anything to test against. If you have an OTOS or would like to see 3 dead wheel localization and have time to test, ping me.
++ Pathing in Rust. This is not important, but it is something I'm interested in nonetheless. You can find the repo where I tried this over [here](https://github.com/owenpmckenna/sidestep).

@@ -199,3 +199,20 @@ impl Into<u8> for BSChecksum {
         self.value
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use std::mem::offset_of;
+    use super::*;
+
+    #[test]
+    fn packet_layout() {
+        println!("Packet size: {}", std::mem::size_of::<Packet>());
+        println!("Packet alignment: {}", std::mem::align_of::<Packet>());
+        println!("Command size: {}", std::mem::size_of::<Command>());
+        println!("Command alignment: {}", std::mem::align_of::<Command>());
+        println!("payload_data: {}", offset_of!(Packet, payload_data));
+        println!("checksum: {}", offset_of!(Packet, checksum));
+    }
+}
