@@ -217,6 +217,9 @@ impl MotorData {
             .map(|(i, p)| MotorData::new(p, velocity[i]))
             .collect()
     }
+    pub fn random() -> Self {
+        Self::new(rand::random(), rand::random())
+    }
 }
 impl Display for LynxGetBulkDataResponseData {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -299,6 +302,7 @@ impl CommandData for LynxGetBulkDataResponseData {
         34
     }
 }
+
 
 
 #[derive(Clone, Copy, PartialEq)]

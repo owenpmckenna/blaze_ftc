@@ -5,7 +5,7 @@ use std::panic::UnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use thread_priority::{get_current_thread_priority, set_current_thread_priority, ThreadPriority};
-use crate::catch;
+use crate::{catch, get_servo_module_parent};
 use crate::control::hardware::LynxHub;
 
 /**
@@ -36,6 +36,7 @@ where
             get_current_thread_priority().expect("could not get thread priority read - 2"),
         );
     }
+    let mut packet_num = 0u128;
     let mut locked = false;
     let mut was_locked = locked;
     let mut reading = vec![0u8; 128];//much larger than any packet we should receive
@@ -87,11 +88,19 @@ where
                 continue;
             }
             Some(packet) => {
-                if let Some(hub) = LynxHub::get_for_id_careful(packet.src_module_addr) {
-                    hub.notify_receive_packet();
+                let src = if let Some(it) = get_servo_module_parent(packet.src_module_addr) {
+                    it
+                } else {packet.src_module_addr};
+                if let Some(hub) = LynxHub::get_for_id_careful(src) {
+                    hub.notify_receive_packet(&packet);
+                } else {
+                    if packet_num > 50 && !LynxHub::ctrl_hub_inited() {
+                        panic!("got packet for {}, which we can't find: {}, {}", src, packet.src_module_addr, packet)
+                    }
                 }
                 log::trace!("did read packet! pack:{:?}",packet);
                 send.send(packet).expect("failed to send to channel!");
+                packet_num += 1;
             }
         }
         was_locked = locked;

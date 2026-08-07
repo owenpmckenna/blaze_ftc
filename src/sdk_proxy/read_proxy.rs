@@ -1,4 +1,4 @@
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use crossbeam_channel::{unbounded, Receiver, Sender};
@@ -29,7 +29,7 @@ pub fn generate_read_sdk_proxy(
             let mut had_second_packet = false;
             while running.load(Ordering::SeqCst) {
                 let mut d = to_read.recv().unwrap();
-                if let Command::QueryInterfaceResponse(it) = &d.payload_data {
+                if let Command::QueryInterfaceResponse(it) = &d.payload_data && has_interface_query() {
                     log::info!("Got query interface response data! Writing directly to our code!");
                     regular_read_sender.send(d).unwrap();
                     continue;
@@ -93,4 +93,14 @@ pub fn generate_read_sdk_proxy(
         }, "Read Sdk Proxy Method");
     });
     (regular_read_receiver, ftcsdk_read_receiver, sdk_receive_input)
+}
+static INTERFACE_QUERY_TRACKER: OnceLock<(Sender<()>, Receiver<()>)> = OnceLock::new();
+fn get_interface_query_tracker() -> &'static (Sender<()>, Receiver<()>) {
+    INTERFACE_QUERY_TRACKER.get_or_init(|| unbounded())
+}
+pub fn ask_for_interface_query() {
+    get_interface_query_tracker().0.send(()).unwrap();
+}
+fn has_interface_query() -> bool {
+    get_interface_query_tracker().1.try_recv().is_ok()
 }

@@ -1,8 +1,10 @@
 use std::cmp::PartialEq;
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicPtr, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use std::time::{Duration, Instant};
+use atomptr::AtomPtr;
+use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
+use num_traits::real::Real;
 use wait_on_address::AtomicWait;
 use crate::control::hardware::Direction::{Backwards, Forwards};
 use crate::sdk_proxy::proxy::Proxy;
@@ -11,15 +13,16 @@ use crate::serialization::command_utils::Module;
 use crate::serialization::lynx_commands::base_lynx_command::LynxCommand::{LynxGetBulkDataCommand, LynxGetBulkDataResponse, LynxSetMotorChannelModeCommand, LynxSetMotorPowerCommand, LynxSetServoPulseWidthCommand};
 use crate::serialization::lynx_commands::base_lynx_command::LynxCommandData;
 use crate::serialization::lynx_commands::lynx_commands::{DcMotorRunMode, DcMotorZeroPowerBehavior, LynxGetBulkDataCommandData, LynxGetBulkDataResponseData, LynxSetMotorChannelModeCommandData, LynxSetMotorPowerCommandData, LynxSetServoPulseWidthCommandData};
-use crate::serialization::packet::Packet;
+use crate::serialization::packet::{Packet, Packets};
 use crate::{HUB_0, HUB_1};
 use crate::sdk_proxy::send_proxy::register_packet;
+use crate::sdk_proxy::send_proxy::register_packets;
 use crate::serialization::command::Command;
 
 ///this should be on by default, it represents whether we do motor power caching or not.
 /// it should only be turned off for debugging purposes, where you want to test worst-case timing
 pub static DO_MOTOR_CACHING: AtomicBool = AtomicBool::new(true);
-pub static MOTOR_CACHING_THRESHOLD: AtomicI16 = AtomicI16::new(0);
+pub static MOTOR_CACHING_THRESHOLD: AtomicI16 = AtomicI16::new(50);
 type Data = LynxGetBulkDataResponseData;
 #[derive(Debug)]
 pub struct LynxHub {
@@ -30,9 +33,12 @@ pub struct LynxHub {
     motor_zero_power_behaviors: [AtomicU8; 4],
     motor_modes: [AtomicU8; 4],
     pub(crate) is_over_rs: Option<(Sender<()>, Receiver<()>)>,
-    pub sender: Sender<Packet>,
+    pub sender: Sender<Packets>,
     pub sdk_proxy: UnderlyingHw,
-    pub receiver: Receiver<Packet>
+    pub receiver: Receiver<Packet>,
+    last_packet: AtomPtr<(Packet, Instant)>,
+    last_packet_rec: AtomPtr<(Packet, Instant)>,
+    last_lockout_reset: AtomPtr<Instant>,
 }
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -54,7 +60,7 @@ impl Direction {
 }
 
 impl LynxHub {
-    pub fn new(module: Module, out: Sender<Packet>, sdk_proxy: UnderlyingHw, receiver: Receiver<Packet>, is_over_rs: bool) -> LynxHub {
+    pub fn new(module: Module, out: Sender<Packets>, sdk_proxy: UnderlyingHw, receiver: Receiver<Packet>, is_over_rs: bool) -> LynxHub {
         let bd = bounded(1);
         bd.0.send(()).unwrap();
         LynxHub {
@@ -69,7 +75,10 @@ impl LynxHub {
             is_over_rs: match is_over_rs {
                 true => {Some(bd)}
                 false => {None}
-            }
+            },
+            last_packet: AtomPtr::new((Packet::null(), Instant::now())),
+            last_packet_rec: AtomPtr::new((Packet::null(), Instant::now())),
+            last_lockout_reset: AtomPtr::new(Instant::now()),
         }
     }
     pub fn get_motor_direction(&self, motor: usize) -> Direction {
@@ -98,21 +107,39 @@ impl LynxHub {
             }
         } else { None }
     }
-    pub fn notify_receive_packet(&'static self) {
+    pub fn notify_receive_packet(&'static self, pack: &Packet) {
         if let Some(w) = &self.is_over_rs {
             if w.0.is_full() {
                 log::info!("already have data in rs485 unblocker!")
             } else {
                 w.0.send(()).expect("could not send rs485 unblocker");
             }
-            log::trace!("notify all called! is full? {}", w.0.is_full())
+            log::trace!("notify all called! is full? {}", w.0.is_full());
+            self.last_packet_rec.swap((pack.clone(), Instant::now()));
         }
     }
     pub fn notify_send_packet(&'static self, pck: &Packet) {
         if let Some(w) = &self.is_over_rs {
             log::trace!("maybe going to wait on rs485, nm:{}, data:{}", pck.message_number, pck.payload_data);
-            w.1.recv().expect("could not receive from rs485 blocker");
+            match w.1.recv_timeout(Duration::from_millis(25)) {
+                Ok(_) => {}
+                Err(it) => {
+                    let last_reset = self.last_lockout_reset.swap(Instant::now());
+                    let last = self.last_packet.get_ref();
+                    let last_rec = self.last_packet_rec.get_ref();
+                    log::info!("Error trying to send on RS485! {}, us: {}, last packet: {}, elapsed: {} ms, last packet rec: {}, elapsed: {}", it, pck, last.0, last.1.elapsed().as_millis(), last_rec.0, last_rec.1.elapsed().as_millis());
+                    if last_reset.elapsed().as_millis() > 25 {
+                        log::info!("just continuing despite lockout! check:{}", pck.checksum)
+                        //Just continue. The packet will be written to the line.
+                    } else {
+                        log::info!("last reset recent. Going into another notify send loop. check:{}", pck.checksum);
+                        self.notify_send_packet(pck);
+                        return;
+                    }
+                }
+            };
             log::trace!("done waiting on rs485, nm:{}", pck.message_number);
+            self.last_packet.swap((pck.clone(), Instant::now()));
         }
     }
     fn prepare_send_packet(&'static self, mut packet: Packet) -> (Packet, u8) {
@@ -127,12 +154,30 @@ impl LynxHub {
         log::trace!("waiting for packet: d:{} --- {}", packet.dest_module_addr, packet);
         self.notify_send_packet(&packet);
         log::trace!("done waiting for packet: {:?}", packet.dest_module_addr);
-        self.sender.send(packet).expect("could not send packet in hub!");
+        self.sender.send(packet.into()).expect("could not send packet in hub!");
     }
     pub fn send_packet(&'static self, packet: Packet) -> u8 {
         let (packet, num) = self.prepare_send_packet(packet);
         self.send_prepared_packet(packet);
         num
+    }
+
+    fn prepare_send_packets(&'static self, packets: &mut Packets) {
+        let proxy = self.get_proxy();
+        let num = register_packets(&proxy.message_list, packets.len() as u8);
+        for i in 0..packets.len() {
+            packets[i].message_number = num[i];
+            packets[i].reference_number = num[i];
+            packets[i].checksum = packets[i].checksum();
+        }
+    }
+    pub fn send_packets(&'static self, mut packets: Packets) -> Option<()> {
+        if self.is_over_rs.is_some() {
+            return None
+        }
+        self.prepare_send_packets(&mut packets);
+        self.sender.send(packets).expect("could not send packets in hub!");
+        Some(())
     }
     pub fn get_proxy(&'static self) -> &'static Proxy {
         match &self.sdk_proxy {
@@ -154,10 +199,18 @@ impl LynxHub {
         log::trace!("lynx writing packet {}", packet);
         self.prepare_send_packet(packet)
     }
+    pub fn send_lynx_packets(&'static self, lynx_command: Vec<crate::serialization::lynx_commands::base_lynx_command::LynxCommand>) -> Option<()> {
+        let packets: Vec<Packet> = lynx_command.into_iter().map(|it| {
+            let resp = LynxCommand(LynxCommandData { module: &self.module, command: it });
+            Packet::new_full(resp, self.module.module_addr, 0, 0, 0)
+        }).collect();
+        log::trace!("lynx writing packets {}", packets.len());
+        self.send_packets(packets)
+    }
     pub fn send_motor_command(&'static self, motor: u8, mut power: f32) {
         power = self.get_motor_direction(motor as usize).mult() * power;
         if power.abs() > 1.0 {
-            log::info!("attempted to fire motor w/ power > 1");
+            log::trace!("attempted to fire motor w/ power > 1");
             power = if power > 1.0 {1.0} else {-1.0};
         }
         let calculated = (power * (i16::MAX as f32)) as i16;
@@ -174,6 +227,29 @@ impl LynxHub {
         self.send_lynx_packet(lynx_command);
         //let packet = Packet::new(lynx_command.to_command(&self.module), self.module.module_addr, 0);
         //self.send_packet(packet);
+    }
+    pub fn send_motor_commands(&'static self, mut power: [f32; 4]) -> Option<()> {
+        let mut out_power = [0i16; 4];
+        for i in 0..4 {
+            power[i] = self.get_motor_direction(i).mult() * power[i].clamp(-1.0, 1.0);
+            out_power[i] = (power[i] * (i16::MAX as f32)) as i16;
+        }
+        self.send_motor_commands_i16(out_power)
+    }
+    pub fn send_motor_commands_i16(&'static self, power: [i16; 4]) -> Option<()> {
+        let packets: Vec<crate::serialization::lynx_commands::base_lynx_command::LynxCommand> = power.into_iter().enumerate().filter_map(|(i, power)| {
+            if (self.last_motor_powers[i].load(Ordering::SeqCst) - power).abs() <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
+                if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
+                    return None; //don't need to send this it's literally the same value!
+                }
+            }
+            self.last_motor_powers[i].store(power, Ordering::SeqCst);
+            Some(LynxSetMotorPowerCommand(LynxSetMotorPowerCommandData { motor: i as u8, power }))
+        }).collect();
+        if packets.len() == 0 {
+            return Some(())
+        }
+        self.send_lynx_packets(packets)
     }
     ///here be dragons! This is an entirely untested method, so... idk just don't expect this to work at all.
     pub fn send_servo_command(&'static self, servo: u8, position: f32) {
@@ -232,6 +308,9 @@ impl LynxHub {
     }
     pub fn get_for_id(id: u8) -> &'static LynxHub {
         Self::get_for_id_careful(id).expect("get_for_id_careful found no hub 0!")
+    }
+    pub fn ctrl_hub_inited() -> bool {
+        HUB_0.get().is_some()
     }
     pub fn get_for_id_careful(id: u8) -> Option<&'static LynxHub> {
         if let Some(hub) = HUB_1.get() {

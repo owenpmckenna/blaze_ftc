@@ -13,7 +13,7 @@ use crate::control::hardware::UnderlyingHw::DirectProxy;
 use crate::sdk_proxy::proxy::Proxy;
 use crate::serialization::i2c_comms::i2c_device::{I2CConsumer, I2CDevice, I2CDeviceHandler, I2CDevicePair};
 use crate::serialization::lynx_commands::lynx_commands::LynxGetBulkDataResponseData;
-use crate::serialization::packet::Packet;
+use crate::serialization::packet::{Packet, Packets};
 use crate::telemetry::telemetry::Telemetry;
 
 pub struct Robot {
@@ -193,7 +193,8 @@ impl Robot {
                     }
                 }
                 for i in &self.kill_signal_txs {
-                    let _ = i.send(());//just swallow any disconnect errors
+                    log::info!("killing... {:?}", i.send(()));
+                    //let _ = i.send(());//just swallow any disconnect errors
                 }
                 reset_properties();
             }
@@ -355,7 +356,8 @@ impl Robot {
         }
         true
     }
-    pub(crate) fn add_kill_signal_sender(&mut self, rx: Sender<()>) {
+    pub fn add_kill_signal_sender(&mut self, rx: Sender<()>) {
+        log::info!("adding kill signal... {}", self.kill_signal_txs.len());
         self.kill_signal_txs.push(rx);
     }
 }
@@ -491,7 +493,7 @@ impl<'a> InterceptorData {
 pub trait SdkPacketHandler: Send + Sync + UnwindSafe + RefUnwindSafe {
     fn handle_packet(&mut self, robot: &Robot, packet: Packet, to_reader: &Sender<Packet>) -> Option<Packet>;
     //msgnum = refnum
-    fn try_get_sender<'a>(&self, robot: &'a Robot, addr: u8) -> Option<&'a Sender<Packet>> {
+    fn try_get_sender<'a>(&self, robot: &'a Robot, addr: u8) -> Option<&'a Sender<Packets>> {
         Some(&self.try_get_hub(robot, addr)?.sender)
     }
     fn try_get_hub(&self, robot: &Robot, addr: u8) -> Option<&'static LynxHub> {

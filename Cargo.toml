@@ -22,6 +22,7 @@ wait_on_address = { git = "https://github.com/owenpmckenna/wait_on_address" }#ha
 atomptr = "3.2.0"
 unsafe-any = "0.4.2"
 spin_sleep = "1.3.3"
+rand = "0.10.2"
 
 [profile.dev]
 panic = "unwind"

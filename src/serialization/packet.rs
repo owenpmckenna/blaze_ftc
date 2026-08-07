@@ -199,11 +199,31 @@ impl Into<u8> for BSChecksum {
         self.value
     }
 }
-
+pub type Packets = Vec<Packet>;
+impl Into<Packets> for Packet {
+    fn into(self) -> Packets {
+        vec![self]
+    }
+}
+impl Packet {
+    pub fn conv_byte_vec(mut packets: Packets) -> Vec<u8> {
+        let mut first: Vec<u8> = packets.remove(0).into();
+        for i in packets.into_iter() {
+            let vec: Vec<u8> = i.into();
+            first.extend_from_slice(&vec)
+        }
+        first
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use std::mem::offset_of;
+    use rand::random;
+    use crate::serialization::command_data::CommandData;
+    use crate::serialization::command_utils::ModuleType::Lynx;
+    use crate::serialization::command_utils::RESPONSE_BIT;
+    use crate::serialization::lynx_commands::lynx_commands::{LynxGetBulkDataResponseData, MotorData};
     use super::*;
 
     #[test]
@@ -214,5 +234,19 @@ mod tests {
         println!("Command alignment: {}", std::mem::align_of::<Command>());
         println!("payload_data: {}", offset_of!(Packet, payload_data));
         println!("checksum: {}", offset_of!(Packet, checksum));
+    }
+    #[test]
+    fn bulk_works() {
+        let bulk = LynxGetBulkDataResponseData {
+            digital_inputs: random(),
+            motor_status: random(),
+            motors: [MotorData::random(), MotorData::random(), MotorData::random(), MotorData::random()],
+            analog: [random(), random(), random(), random()],
+        };
+        let serialized: Vec<u8> = bulk.clone().into();
+        let deserialized = LynxGetBulkDataResponseData::from_bytes(0 | RESPONSE_BIT, &serialized, 0).unwrap();
+        println!("eq: {}", bulk == deserialized);
+        println!("a: {}", bulk);
+        println!("b: {}", deserialized);
     }
 }

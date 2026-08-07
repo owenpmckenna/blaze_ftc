@@ -1,8 +1,9 @@
 use crate::serialization::commands::{QueryInterfaceData, QueryInterfaceResponseData};
-use crate::serialization::packet::Packet;
+use crate::serialization::packet::{Packet, Packets};
 use num_enum::TryFromPrimitive;
 use std::convert::Into;
 use crossbeam_channel::{Receiver, RecvError, Sender};
+use crate::sdk_proxy::read_proxy::ask_for_interface_query;
 use crate::serialization::command::Command;
 
 #[repr(u16)]
@@ -103,10 +104,11 @@ impl Module {
             } else {log::info!("got packet that wasn't a interface response data! {}", data);}
         }
     }
-    pub fn generate_module(id: u8, is_parent: bool, out: &Sender<Packet>, receiver: &Receiver<Packet>) -> Module {
+    pub fn generate_module(id: u8, is_parent: bool, out: &Sender<Packets>, receiver: &Receiver<Packet>) -> Module {
+        ask_for_interface_query();
         let req_cmd = Command::QueryInterface(QueryInterfaceData::new_deka());
         let req_packet = Packet::new(req_cmd, id, 0);
-        out.send(req_packet).unwrap();
+        out.send(req_packet.into()).unwrap();
         let pack = Self::try_get_packet(receiver);
         Self::from_deka_discovery(id, &pack, is_parent)
     }

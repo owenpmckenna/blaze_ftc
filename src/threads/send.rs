@@ -1,16 +1,10 @@
-use crate::serialization::command::Command;
-use crate::serialization::packet::Packet;
+use crate::serialization::packet::{Packet, Packets};
 use crossbeam_channel::{Receiver, RecvError, Sender, select, unbounded};
-use jni::objects::JValue::Int;
-use log::{info, log};
-use std::backtrace::Backtrace;
 use std::io::Write;
-use std::ops::Sub;
 use std::panic::UnwindSafe;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
-use std::{panic, thread};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+use std::{thread};
 use thread_priority::{get_current_thread_priority, set_current_thread_priority, ThreadPriority};
 use crate::catch;
 
@@ -21,11 +15,11 @@ const PERCENTAGE: f64 = 0.002;//not a percentage, it's out of SendSaturationType
 //something is scuffed. we were seeing like, 200% write speeds that *cannot* happen.
 
 //~ 43 bytes per millis
-pub fn generate_write_threads<T>(mut port: T, running: &'static AtomicBool) -> Sender<Packet>
+pub fn generate_write_threads<T>(mut port: T, running: &'static AtomicBool) -> Sender<Packets>
 where
     T: Write + Send + 'static + UnwindSafe,
 {
-    let (write_sender, write_receiver) = unbounded::<Packet>();
+    let (write_sender, write_receiver) = unbounded::<Packets>();
     thread::spawn(move || {
         catch(move || {
             {
@@ -50,12 +44,13 @@ where
                     }
                 };
                 log::trace!(
-                    "writing packet: ref num:{} len:{}, command:{}",
-                    x.reference_number,
-                    x.packet_length,
-                    x.payload_data
+                    "writing {} packets: ref num:{} len:{}, command:{}",
+                    x.len(),
+                    x[0].reference_number,
+                    x[0].packet_length,
+                    x[0].payload_data
                 );
-                let datas: Vec<u8> = x.into();
+                let datas: Vec<u8> = Packet::conv_byte_vec(x);
                 log::trace!("-EVADEBUG- write bytes to lynx: {:?}", datas);
                 let len = datas.len();
                 port.write_all(datas.as_slice()).unwrap();

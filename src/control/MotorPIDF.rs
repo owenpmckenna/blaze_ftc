@@ -73,3 +73,5 @@ impl MotorPIDF {
     pub fn reset_integral(&mut self) { self.pid.reset_integral_term() }
 }
 pub type PIDF = (f32, f32, f32, f32);
+//impl PartialEq for PIDF {}
+//impl Default for PIDF {}

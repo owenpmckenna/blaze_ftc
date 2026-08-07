@@ -8,7 +8,7 @@ use crate::control::hardware::LynxHub;
 use crate::control::robot::{Interceptor, Robot};
 use crate::sdk_proxy::read_proxy::generate_read_sdk_proxy;
 use crate::sdk_proxy::send_proxy::{generate_write_sdk_proxy, MessageList};
-use crate::serialization::packet::Packet;
+use crate::serialization::packet::{Packet, Packets};
 use crate::threads::timing_analyzer::TimingAnalyzer;
 
 pub static TIMING_TRACKER: LazyLock<TimingAnalyzer> = LazyLock::new(|| TimingAnalyzer::new());
@@ -37,8 +37,8 @@ pub struct Proxy {
     pub message_list: Arc<MessageList>,
 }
 impl Proxy {
-    pub fn new(direct_send: Sender<Packet>, direct_receive: Receiver<Packet>, running: &'static AtomicBool) -> (Sender<Packet>, Receiver<Packet>, Proxy) {
-        let ftc_packets = Arc::new(Mutex::new(vec![]));
+    pub fn new(direct_send: Sender<Packets>, direct_receive: Receiver<Packet>, running: &'static AtomicBool) -> (Sender<Packets>, Receiver<Packet>, Proxy) {
+        let ftc_packets = Arc::new(Mutex::new(Vec::with_capacity(5)));
         let (send, sdk_send, message_list) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running);
         let (receive, sdk_receive, sdk_receive_input) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running);
         (send, receive, Proxy {

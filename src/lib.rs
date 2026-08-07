@@ -17,24 +17,22 @@ use std::thread::sleep;
         Some(it) => {it}
     }
 }*/
-use jni::{jni_sig, jni_str, Env, EnvUnowned, JNIEnv, JavaVM};
-use jni::objects::{GlobalRef, JByteArray, JClass, JObject, JString};
+use jni::{jni_sig, jni_str, Env, EnvUnowned, JavaVM};
+use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::sys::jint;
 
-use crate::serialization::packet::Packet;
+use crate::serialization::packet::{Packet, Packets};
 use crate::threads::{read::generate_read_threads, send::generate_write_threads};
 use crossbeam_channel::{unbounded, Receiver, Sender};
 //use serial2::{CharSize, FlowControl, Parity, SerialPort, Settings, StopBits};
 use std::backtrace::Backtrace;
 use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::ops::{Add, Div, Mul, Sub};
-use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::os::fd::{AsRawFd, RawFd};
 use std::panic;
-use std::panic::{AssertUnwindSafe, catch_unwind, UnwindSafe};
+use std::panic::{catch_unwind, UnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use crate::telemetry::telemetry::{set_allowed_to_send_dangerous_packets, Telemetry};
 
@@ -76,7 +74,7 @@ fn call_close_object(env: &mut Env) {
 
 //dev.anygeneric.blazeftc
 pub static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
-fn setup_port(port: impl AsRef<Path>) -> (Sender<Packet>, Receiver<Packet>, Proxy) {
+fn setup_port(port: impl AsRef<Path>) -> (Sender<Packets>, Receiver<Packet>, Proxy) {
     let mut port = SerialPort::open(port, |mut settings: Settings| {
         settings.set_raw();
         settings.set_stop_bits(StopBits::One);
@@ -115,6 +113,11 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_initialize(
                 log::info!("Already initialized! --- skipping...");
                 return Ok(());
             }
+        }
+        {
+            let svh = get_servo_hubs_init_data();
+            let hubs = SERVO_HUBS.get_or_init(|| svh.clone()).len();
+            log::info!("remembered {} hubs", hubs);
         }
 
         let vm = env.get_java_vm().unwrap();
@@ -248,6 +251,36 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_informOfModule(
         Ok(())
     }).resolve::<ThrowRuntimeExAndDefault>();
 }
+pub type ServoModule = u8;
+pub type ServoModuleParent = u8;
+static SERVO_HUBS_INIT_DATA: OnceLock<Mutex<Vec<(ServoModule,ServoModuleParent)>>> = OnceLock::new();
+static SERVO_HUBS: OnceLock<Vec<(ServoModule, ServoModuleParent)>> = OnceLock::new();
+fn get_servo_hubs_init_data() -> MutexGuard<'static, Vec<(ServoModule, ServoModuleParent)>> {
+    SERVO_HUBS_INIT_DATA.get_or_init(|| Mutex::new(vec![])).lock().unwrap()
+}
+///get the lynx hub parent id of the servo module if one exists
+pub fn get_servo_module_parent(smodule: ServoModule) -> Option<ServoModuleParent> {
+    SERVO_HUBS.get().expect("no servo modules, somehow").iter()
+        .find(|(module, parent)| *module == smodule)
+        .map(|(_, p)| *p)
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_informOfServoHub(
+    mut env: EnvUnowned,
+    _class: JClass,
+    module: jint,
+    parent: jint) {
+    env.with_env(|env| -> Result<_, jni::errors::Error> {
+        log::info!(
+            "informed of servo hub {}!",
+            module as u8
+        );
+        get_servo_hubs_init_data()
+            .push((module as u8, parent as u8));
+        Ok(())
+    }).resolve::<ThrowRuntimeExAndDefault>();
+}
+
 pub(crate) fn catch<F, R>(func: F, name: &str) -> R where F: FnOnce() -> R + UnwindSafe {
     let result = catch_unwind(func);
     match result {
@@ -294,17 +327,17 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_write(
             log::trace!("-EVADEBUG- abt to write bytes from java: {:?} and get lock", bytes);
             if let Some(it) = Packet::from_data(bytes.as_slice()) {
                 log::trace!("fw packet from java! {:?}", it);
+                let dest = if let Some(dest) = get_servo_module_parent(it.dest_module_addr) {
+                    dest
+                } else {it.dest_module_addr};
                 let hub_0 = HUB_0.get().expect("HUB 0 unset!");
-                if let Some(hub) = LynxHub::get_for_id_careful(it.dest_module_addr) {
-                    //hub.notify_send_packet(&it);//TODO here
-                }
-                if it.dest_module_addr == hub_0.module.module_addr {
+                if dest == hub_0.module.module_addr {
                     hub_0.send_from_sdk(it, None);
                     log::trace!("sent bytes to proxy!");
                     return Ok(());
                 }
                 if let Some(hub_1) = HUB_1.get() {
-                    if hub_1.module.module_addr == it.dest_module_addr {
+                    if dest == hub_1.module.module_addr {
                         hub_1.send_from_sdk(it, None);
                         log::trace!("sent bytes to proxy!");
                         return Ok(());
@@ -365,6 +398,7 @@ pub(crate) fn properties_contains(key: &str) -> bool {
 pub(crate) fn reset_properties() {
     get_prop_map().lock().unwrap().clear()
 }
+//Java_dev_anygeneric_blazeftc_BlazeFTC_sendProperty
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_sendProperty(
     mut env: EnvUnowned,
@@ -396,6 +430,22 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_setMotorPower(
         });
         //log::info!("No module found! m{} p{} pow{}", module, port, power)
     }, "set motor power from java");
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_setMotorPowers(
+    _env: EnvUnowned, _class: JClass, module: jint, power0: jdouble, power1: jdouble, power2: jdouble, power3: jdouble
+) {
+    catch(|| {
+        [&HUB_0, &HUB_1].into_iter().for_each(move |it| {
+            if let Some(it) = it.get() {
+                if it.module.module_addr == module as u8 {
+                    it.send_motor_commands([power0 as f32, power1 as f32, power2 as f32, power3 as f32]);
+                }
+            }
+        });
+        //log::info!("No module found! m{} p{} pow{}", module, port, power)
+    }, "set motor powers from java");
 }
 
 #[unsafe(no_mangle)]
@@ -445,6 +495,7 @@ use android_logger::Config;
 use jni::errors::ThrowRuntimeExAndDefault;
 use jni::refs::Global;
 use log::{LevelFilter};
+use nix::NixPath;
 use serial2::{CharSize, FlowControl, Parity, SerialPort, Settings, StopBits};
 use crate::sdk_proxy::proxy::Proxy;
 
