@@ -37,10 +37,10 @@ pub struct Proxy {
     pub message_list: Arc<MessageList>,
 }
 impl Proxy {
-    pub fn new(direct_send: Sender<Packets>, direct_receive: Receiver<Packet>, running: &'static AtomicBool) -> (Sender<Packets>, Receiver<Packet>, Proxy) {
+    pub fn new(direct_send: Sender<Packets>, direct_receive: Receiver<Packet>, running: &'static AtomicBool, id: u8) -> (Sender<Packets>, Receiver<Packet>, Proxy) {
         let ftc_packets = Arc::new(Mutex::new(Vec::with_capacity(5)));
         let (send, sdk_send, message_list) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running);
-        let (receive, sdk_receive, sdk_receive_input) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running);
+        let (receive, sdk_receive, sdk_receive_input) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running, id);
         (send, receive, Proxy {
             running,
             sdk_send,

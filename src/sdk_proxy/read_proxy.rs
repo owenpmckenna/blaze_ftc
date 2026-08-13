@@ -17,6 +17,7 @@ pub fn generate_read_sdk_proxy(
     to_read: Receiver<Packet>,
     packets_to_watch: Arc<Mutex<Vec<IdTransform>>>,
     running: &'static AtomicBool,
+    id: u8
 ) -> (Receiver<Packet>, Receiver<Packet>, Sender<Packet>) {
     let (regular_read_sender, regular_read_receiver) = unbounded::<Packet>();
     let (ftcsdk_read_sender, ftcsdk_read_receiver) = unbounded::<Packet>();
@@ -28,31 +29,31 @@ pub fn generate_read_sdk_proxy(
             let mut first_packet = None;
             let mut had_second_packet = false;
             while running.load(Ordering::SeqCst) {
-                let mut d = to_read.recv().unwrap();
+                let mut d = to_read.recv().expect(&format!("couldn't read from channel {}", id));
                 if let Command::QueryInterfaceResponse(it) = &d.payload_data && has_interface_query() {
                     log::info!("Got query interface response data! Writing directly to our code!");
-                    regular_read_sender.send(d).unwrap();
+                    regular_read_sender.send(d).expect("could not send on QIR");
                     continue;
                 }
                 if first {
                     log::info!("received first packet. not overwriting.");
                     first_packet = Some(d.clone());
                     first = false;
-                    ftcsdk_read_sender.send(d).unwrap();
+                    ftcsdk_read_sender.send(d).expect("could not send first packet");
                     continue;
                 }
                 if !had_second_packet {
-                    let val = first_packet.as_ref().unwrap();
+                    let val = first_packet.as_ref().expect("firstpacket null?");
                     if *val == d {
                         log::info!("haven't received a different packet yet! reading normally...");
-                        ftcsdk_read_sender.send(d).unwrap(); //if we haven't received another packet, they are still looking for this one and we should keep sending it
+                        ftcsdk_read_sender.send(d).expect("could not send on ftcscksender"); //if we haven't received another packet, they are still looking for this one and we should keep sending it
                         continue;
                     } else {
                         log::info!("finally received second packet in read proxy!");
                         had_second_packet = true; //continue!
                     }
                 }
-                let mut lock = packets_to_watch.lock().unwrap();
+                let mut lock = packets_to_watch.lock().expect("packets_to_watch unlock fail");
                 log::trace!(
                     "read: searching for packet ref num {} in list. (len {})",
                     d.reference_number,
@@ -73,7 +74,7 @@ pub fn generate_read_sdk_proxy(
                             d.reference_number,
                             d.payload_data
                         );
-                        regular_read_sender.send(d).unwrap();
+                        regular_read_sender.send(d).expect("regular_read_sender detached");
                     }
                     Some(it) => {
                         TIMING_TRACKER.update(it.1.sent_time.elapsed());
@@ -86,7 +87,7 @@ pub fn generate_read_sdk_proxy(
                         d.message_number = it.1.old_id; //TODO: again, is this a good idea? idk what msg # does for sdk
                         d.reference_number = it.1.old_id;
                         Command::log_pack_id(d.reference_number, &it.1.old_pack, &d);
-                        ftcsdk_read_sender.send(d).unwrap();
+                        ftcsdk_read_sender.send(d).expect("ftcsdk_read_sender detached");
                     }
                 }
             }

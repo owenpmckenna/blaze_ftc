@@ -147,6 +147,21 @@ impl Packet {
             ))
             .into()
     }
+    pub fn encode(self, data: &mut [u8]) -> (usize, &mut [u8]) {
+        data[0..2].copy_from_slice(&FRAME_BYTES); //0,1
+        data[2..4].copy_from_slice(&self.packet_length.to_le_bytes()); //2,3
+        data[4] = self.dest_module_addr; //4
+        data[5] = self.src_module_addr; //5
+        data[6] = self.message_number; //6
+        data[7] = self.reference_number; //7
+        data[8..10].copy_from_slice(&self.packet_id.to_le_bytes()); //8,9
+        let payload: Vec<u8> = self.payload_data.into();
+        //data.extend_from_slice(payload.as_slice());
+        //data.push(self.checksum);
+        data[10..10+payload.len()].copy_from_slice(payload.as_slice());//10 maybe
+        data[10+payload.len()] = self.checksum;//
+        (11+payload.len(), &mut data[10+payload.len()+1..])
+    }
 }
 impl Into<Vec<u8>> for Packet {
     fn into(mut self) -> Vec<u8> {

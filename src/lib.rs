@@ -5,6 +5,7 @@ pub mod control;
 pub mod telemetry;
 pub extern crate crossbeam_channel;
 pub extern crate jni;
+extern crate core;
 //pub extern crate self as blaze_ftc;
 
 use jni::sys::{jboolean, jbyte, jbyteArray, jdouble, jstring, va_list};
@@ -97,7 +98,12 @@ fn setup_port(port: impl AsRef<Path>) -> (Sender<Packets>, Receiver<Packet>, Pro
     let write_tx = generate_write_threads(port.try_clone().unwrap(), &RUNNING);
     //reg_write_tx not used here
 
-    Proxy::new(write_tx, read_rx, &RUNNING)
+    Proxy::new(write_tx, read_rx, &RUNNING, 0)
+}
+fn setup_usb_port() -> (Sender<Packets>, Receiver<Packet>, Proxy) {
+    let write_tx = start_usb_write_thread();
+    let read_rx = start_usb_read_thread();
+    Proxy::new(write_tx, read_rx, &RUNNING, 1)
 }
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_initialize(
@@ -114,10 +120,11 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_initialize(
                 return Ok(());
             }
         }
+        BLAZEFTC_CLASS.get_or_init(|| env.new_global_ref(telemetry).unwrap());
         {
             let svh = get_servo_hubs_init_data();
             let hubs = SERVO_HUBS.get_or_init(|| svh.clone()).len();
-            log::info!("remembered {} hubs", hubs);
+            log::info!("remembered {} s hubs", hubs);
         }
 
         let vm = env.get_java_vm().unwrap();
@@ -150,19 +157,18 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_initialize(
 
         if let Some(it) = EX_HUB_MODULE_INIT_DATA.get() {
             log::info!("Found expansion hub.");
-            if it.0.eq_ignore_ascii_case(&ctrl_hub_init.0) { //there is no /dev/ttys1 vs ttyS1 we're fine and Java has given me a fundamental distrust of string comparisons
+            if it.0 == HubLocation::RS485 {
                 let ctrl_hub = HUB_0.get().unwrap();
                 let ex_hub_module = Module::generate_module(it.1 as u8, false, &ctrl_hub.sender, &ctrl_hub.receiver);
                 let ex_hub = LynxHub::new(ex_hub_module, write_tx, UnderlyingHw::OtherHub(ctrl_hub), read_rx, true);
                 HUB_1.set(ex_hub).expect("could not set ex hub!");
             } else {
-                let (write_tx, read_rx, proxy) = setup_port(it.0.clone());
+                let (write_tx, read_rx, proxy) = setup_usb_port();
                 let ex_hub_module = Module::generate_module(it.1 as u8, false, &write_tx, &read_rx);
                 let ex_hub = LynxHub::new(ex_hub_module, write_tx, UnderlyingHw::DirectProxy(proxy), read_rx, false);
                 HUB_1.set(ex_hub).expect("could not set ex hub!");
             }
         } else { log::info!("No expansion hub."); }
-        BLAZEFTC_CLASS.get_or_init(|| env.new_global_ref(telemetry).unwrap());
         Ok(())
     }).resolve::<ThrowRuntimeExAndDefault>();
 }
@@ -209,8 +215,13 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_run(
 type InitFunction = fn(&'static LynxHub, Option<&'static LynxHub>,
                        &'static Receiver<(Vec<u8>, Vec<u8>)>, &'static Telemetry, i32) -> ();
 static INITFUNC: OnceLock<InitFunction> = OnceLock::new();
+#[derive(Debug, Eq, PartialEq)]
+enum HubLocation {
+    RS485,
+    Usb
+}
 static CTRL_HUB_MODULE_INIT_DATA: OnceLock<(String, i32)> = OnceLock::new();
-static EX_HUB_MODULE_INIT_DATA: OnceLock<(String, i32)> = OnceLock::new();
+static EX_HUB_MODULE_INIT_DATA: OnceLock<(HubLocation, i32)> = OnceLock::new();
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_informOfModule(
     mut env: EnvUnowned,
@@ -225,6 +236,16 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_informOfModule(
             module as u8,
             parent
         );
+        if fd.is_null() {
+            if EX_HUB_MODULE_INIT_DATA.get().is_none() {
+                log::info!("putting data in ex hub init - USB");
+                EX_HUB_MODULE_INIT_DATA.set((HubLocation::Usb, module as i32))
+                    .expect("could not set expansion hub init data");
+            } else {
+                log::info!("data already in ex hub!")
+            }
+            return Ok(());
+        }
 
         let fd_int = env
             .call_method(fd, jni_str!("getInt$"), jni_sig!("()I"), &[])
@@ -243,7 +264,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_informOfModule(
                 .expect("could not set ctrl hub init data");
         } else if EX_HUB_MODULE_INIT_DATA.get().is_none() {
             log::info!("putting data in ex hub init");
-            EX_HUB_MODULE_INIT_DATA.set((path, module as i32))
+            EX_HUB_MODULE_INIT_DATA.set((HubLocation::RS485, module as i32))
                 .expect("could not set expansion hub init data");
         } else {
             log::info!("we have already been informed of module!")
@@ -532,6 +553,7 @@ use num_traits::{Num, FromPrimitive};
 use termios::{cfmakeraw, tcsetattr, Termios, IXANY, IXOFF, IXON, OPOST, TCSANOW, VMIN, VTIME};
 use crate::control::hardware::{LynxHub, UnderlyingHw};
 use crate::control::robot::{IS_RUNNING, KILL_CHANNEL};
+use crate::threads::usb_handler::{start_usb_read_thread, start_usb_write_thread};
 
 pub struct MovingAverage<T> where T: Num + FromPrimitive + Copy {
     data: Vec<T>,
