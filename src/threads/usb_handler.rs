@@ -4,7 +4,7 @@ use crate::{catch, BLAZEFTC_CLASS, JAVA_VM, RUNNING};
 use core::slice;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use jni::objects::{JByteArray, JByteBuffer, JClass, JObject};
-use jni::sys::jint;
+use jni::sys::{jint, jsize};
 use jni::{jni_sig, jni_str, AttachConfig, AttachGuard, Env, JValue, ScopeToken};
 use log::log;
 use std::error::Error;
@@ -26,19 +26,18 @@ pub fn start_usb_write_thread() -> Sender<Packets> {
             let class_loader = get_class_loader(env, object);
             let mut blazeftc_class = load_class(env, &class_loader, "dev.anygeneric.blazeftc.BlazeFTC");
             //no sense making it small
-            let mut bytes = vec![0u8; 1024];
-            let bytes_buffer = unsafe { env.new_direct_byte_buffer(bytes.as_mut_ptr(), bytes.len()) }
-                .expect("could not make direct byte buffer!");
+            let mut bytes = vec![0u8; 2048];
             loop {
-                do_write_thread(env, &mut rx, &blazeftc_class, &mut bytes, &bytes_buffer);
+                do_write_thread(env, &mut rx, &blazeftc_class, &mut bytes);
             }
         });
         log::info!("USB Write Thread Dead {:?}", res)
     });
     tx
 }
-fn do_write_thread(env: &mut Env, tx: &mut Receiver<Packets>, class: &JClass, vec: &mut Vec<u8>, buffer: &JByteBuffer) {
+fn do_write_thread(env: &mut Env, tx: &mut Receiver<Packets>, class: &JClass, vec: &mut Vec<u8>) {
     let packets = tx.recv().expect("packet write thread no channel");
+    let packets_len = packets.len();
     let mut bytes = 0;
     let mut buf = vec.as_mut_slice();
     for i in packets {
@@ -46,11 +45,13 @@ fn do_write_thread(env: &mut Env, tx: &mut Receiver<Packets>, class: &JClass, ve
         buf = tbuf;
         bytes += add;
     }
+    log::info!("usb writing {} packets as {} bytes", packets_len, bytes);
+    let arr = env.byte_array_from_slice(&vec[0..bytes]).expect("could not create byte array from slice");
     //    public static void writeToUsb(byte[] b, int bytes)
     env.call_static_method(class,
                                         jni_str!("writeToUsb"),
-                                        jni_sig!("(Ljava/nio/ByteBuffer;I)V"),
-                                        &[JValue::Object(buffer), JValue::Int(bytes as jint)])
+                                        jni_sig!("([B)V"),
+                                        &[JValue::Object(&*arr)])
         .expect("call to writeToUsb fail - usb jni");
 
 }
@@ -64,10 +65,9 @@ pub fn start_usb_read_thread() -> Receiver<Packet> {
             let object: &JObject = BLAZEFTC_CLASS.get().unwrap().as_obj();
             let class_loader = get_class_loader(env, object);
             let blazeftc_class = load_class(env, &class_loader, "dev.anygeneric.blazeftc.BlazeFTC");
-            log::info!("usb read classloading done...");
-            let mut bytes = vec![0u8; 1024];
-            let bytes_buffer = unsafe { env.new_direct_byte_buffer(bytes.as_mut_ptr(), bytes.len()) }
-                .expect("could not make direct byte buffer!");
+            const LEN: usize = 1024;
+            let mut bytes = [0u8; LEN];
+            let bytes_buffer = env.new_byte_array(LEN).expect("could not make direct byte buffer!");
             let mut assume_locked = false;
             log::info!("usb read thread entering loop...");
             loop {
@@ -82,22 +82,22 @@ pub fn start_usb_read_thread() -> Receiver<Packet> {
     });
     rx
 }
-fn do_read_thread(env: &mut Env, blazeftc: &JClass, vec: &mut Vec<u8>, bytes: &JByteBuffer, assume_lock: &mut bool) -> Option<Packet> {
+fn do_read_thread(env: &mut Env, blazeftc: &JClass, vec: &mut [u8], bytes: &JByteArray, assume_lock: &mut bool) -> Option<Packet> {
     let mut pos = 0;
     if !*assume_lock {
         while pos <= 1 {
             while pos == 0 {
-                do_read(env, blazeftc, bytes, 0, 1);
+                do_read(env, blazeftc, vec, bytes, 0, 1);
                 if vec[pos] == FRAME_BYTES[0] {
                     log::info!("usb read good byte 1: {}", vec[0]);
-                    pos += 1;
+                    pos = 1;
                 } else {
-                    log::info!("usb read bad byte 1: {}", vec[0])
+                    log::info!("usb read bad byte 1: {}", vec[0]);
                 }
             }
-            do_read(env, blazeftc, bytes, 1, 1);
+            do_read(env, blazeftc, vec, bytes, 1, 1);
             if vec[pos] == FRAME_BYTES[1] {
-                pos += 1;//should get us out of the loop
+                pos = 2;
             } else {
                 log::info!("usb read bad byte 2: {}", vec[1]);
                 pos = 0;//reset if bad
@@ -106,21 +106,23 @@ fn do_read_thread(env: &mut Env, blazeftc: &JClass, vec: &mut Vec<u8>, bytes: &J
         log::info!("usb read good bytes locked");
         *assume_lock = true;
     }
-    do_read(env, blazeftc, bytes, pos, 4 - pos);
-    let num_to_read = u16::from_le_bytes(vec[2..4].try_into().expect("could not convert bytes type")) as usize;
-    do_read(env, blazeftc, bytes, 4, (num_to_read - 4));
-    Packet::from_data(&vec[0..num_to_read])
+    //either the next two bytes (the length, a u16), or all four if we were already locked
+    do_read(env, blazeftc, vec, bytes, pos, 4 - pos);
+    let packet_len = u16::from_le_bytes(vec[2..4].try_into().expect("could not convert bytes type")) as usize;
+    do_read(env, blazeftc, vec, bytes, 4, (packet_len - 4));
+    Packet::from_data(&vec[0..packet_len])
 }
-fn do_read(env: &mut Env, blaze: &JClass, bytes: &JByteBuffer, pos: usize, len: usize) {
+fn do_read(env: &mut Env, blaze: &JClass, vec: &mut [u8], bytes: &JByteArray, pos: usize, len: usize) {
     match env.call_static_method(blaze,
                                      jni_str!("readFromUsbExact"),
-                                     jni_sig!("(Ljava/nio/ByteBuffer;II)V"),
-                                     &[JValue::Object(bytes), JValue::Int(pos as jint), JValue::Int(len as jint)]) {
+                                     jni_sig!("([BII)V"),
+                                     &[JValue::Object(bytes), JValue::Int(pos as jint), JValue::Int(len as jint)])
+        .map(|_| bytes.get_region(env, pos as jsize, bytes[pos..pos + len])).flatten() {
         Ok(_) => {}
         Err(it) => {
             log::info!("ERROR: failed on USB read: {}", it);
             RUNNING.store(false, Ordering::SeqCst);//uhh just kill it idk
-            std::thread::sleep(Duration::from_secs(2));
+            thread::sleep(Duration::from_secs(2));
             panic!("Failure while: {}", "USB Read Thread")
         }
     }

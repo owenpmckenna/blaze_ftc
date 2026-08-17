@@ -25,7 +25,7 @@ Later, FIRST would attempt a similar strategy, taking an existing android TV boa
 This, it must be said, worked incredibly well for FIRST, but it did have its tradeoffs, mostly in performance overhead from the UART lines and some software things.
 
 ## The Software Things
-To allow teams to control the hardware they own, FIRST provided an "SDK." The SDK is a combination of some provided dependencies, bundled native libraries, and a quickstart repo allowing anyone to compile an app containing their own code, to be uploaded to their phone/Control Hub via adb and an adb connection manager from hell known as the "REV Software Hub."
+To allow teams to control the hardware they own, FIRST provided an "SDK." The SDK is a combination of some provided dependencies, bundled native libraries, and a quickstart repo allowing anyone to compile an app containing their own code, to be uploaded to a phone/Control Hub via adb and an adb connection manager from hell known as the "REV Software Hub."
 
 The SDK provides implementations of the protocol used to communicate with the Lynx Module, I2C drivers, hardware control logic, and finally some competition specific logic around running user code, known as "Opmodes" at the correct times.
 
@@ -45,24 +45,25 @@ Industrial robots typically run in the kHz range with dedicated hardware for dir
 Of course, it's important to not get carried away chasing lower loop times for no reason. Luckily, there is good evidence that loop times are holding us back in FTC. 
 I ran several tests, which you can find data and notes for [here](https://www.desmos.com/calculator/hdlejttgzf), using a moderately tuned Pedropathing and basic 48 inch routes at different loop times of 12 ms, 26 ms, and 43 ms. The 43 ms test overshot by 2.3 inches, the 26 ms test by 0.77 inches, and the 12 ms test had no discernible overshoot. This is by no means a particularly scientific test, but it is representative of the situation.
 
-Higher loop times leads to less consistent pathing. Teams may spend weeks trying to tune magic constants to perfect values which, by sheer chance, often cause the robot to come to a stop where they want it to. The issue is, jitter, battery voltage sag, obstacles, uneven floors, and random chance all combine to make this strategy incredibly inconsistent, earning team programmers everyone's annoyance when their autos fail randomly during competition. 
+Higher loop times leads to less consistent pathing. Teams may spend weeks trying to tune magic constants to perfect values which, by sheer chance, often cause the robot to come to a stop where they want it to. 
+The issue is, jitter, battery voltage sag, obstacles, uneven floors, and random chance all combine to make this strategy incredibly inconsistent, earning team programmers everyone's annoyance when their autos fail randomly during competition (ask me how I know). 
 
 ## Well, what do we do about this?
-As I said before, the issue stopping us from reducing loop times is the fact that the SDK blocks on every packet (yes I know motor writes are weird bear with me here). 
+As I said before, the issue stopping us from reducing loop times is the fact that the SDK blocks on every packet (yes I know motor writes are weird bear with me here). It waits for each packet to finish before sending a new one. 
 I am not the first to figure this out. A library known as "Photon" was written several years ago, which can bypass the single command restriction for packets that do not require a response beyond an "Ack." 
-This is better, but not quite good enough (also it's unmaintained now). We can do much better with a similar idea.
+This is better, but not quite good enough (also it's somewhat unmaintained now). We can do much better with a similar idea.
 
-My solution was to figure out a way to both nMy solution was to figure out a way to both not block on writes and also not block on reads, as far as possible. ot block on writes and also not block on reads, as far as possible. 
-If this can be done, it should also be possible to have multiple read packets in flight at the same time. 
+My solution was to figure out a way to both not block on writes and also not block on reads, as far as possible. 
+This can be done, because there's nothing at a hardware level stopping us from having multiple read packets in flight at the same time. 
 While it would probably be possible to take advantage of this inside the SDK, I decided to go with the nuclear option. 
 Instead of trying to force the SDK to work how we want it to, I rewrote most of the thing in Rust.
 
 ## Rewriting most of the thing in Rust
 This strategy does have its disadvantages. First, far fewer FTC participants know Rust and very few people with be able to give me technical assistance in any form. 
 Mainly though, it ended up being far more effort and time investment. However, neither of these problems actually matter, because I'm an unemployed hobbyist developer with plenty of time to work on this, and no one was too likely to write me code for this project during its development, even if it was in Java. 
-Additionally, I don't have to spend as many days fighting with the inherent weirdness of the SDK, and it's undocumented features and TODO comments written by an unknown developer a decade ago.
+Additionally, I don't have to spend as many days fighting with the inherent weirdness of the SDK, and it's undocumented features and TODO comments written by an unknown developer a decade ago. (shoutout "bob" from 2016 lol)
 
-Rust also has its advantages. We get total control over almost everything, native code doesn't have Garbage Collector pauses, it's more optimized, and also, I happen to like Rust, which can't be ignored in a hobby project. 
+Rust also has its advantages. We get total control over almost everything, native code doesn't have Garbage Collector pauses, it's more optimized, and also, I happen to like Rust. 
 We are constrained to write something that is competition legal though, so I had to design the software to run inside the SDK and only at runtime, while still giving us all the benefits. 
 The solution ended up being to create a kind of proxy in between the SDK and the UART bus. Anything sent/read by the SDK is intercepted by some fake java.io.Input/OutputStreams and instead handed over to a compiled Rust binary via Java Native Interface. 
 To ensure robots running Blaze are just as safe as those running a stock SDK, Blaze reads the SDK internal "preventDangerousHardwareAccess" flag every 60 ms. If it's true, we immediately block any commands that could cause movement.
@@ -93,27 +94,27 @@ Write Threads
 
 ## What The Other Threads Are Doing
 Inside Blaze, there are a couple of threads passing data around to process packets. Packets are received via byte buffers from JNI and deserialized into useful objects before being written to a dedicated Crossbeam channel (unless otherwise stated, all channels are the Crossbeam ones). Packets also come from the user's opmode/handlers via a second channel. 
-Both channels are read from by a Write Proxy thread, which is in charge of mutating packet ids so they aren't reused across both the SDK and Blaze, among other things. The Write Proxy thread then sends them via a channel to the write thread, which actually owns the File Descriptor to the UART bus.
+Both channels are read from by a Write Proxy thread, which is in charge of mutating packet ids so they aren't reused across both the SDK and Blaze, among other things. The Write Proxy thread then sends them via a channel to a write thread, which actually owns the File Descriptor to the UART bus/is attached to the JVM to use its USB access.
 
 ```text
-  JNI (Java) OutputStream
-      |
-      v
-Write Proxy Thread <-- Blaze Opmode
-      |
-      v
-UART Write Thread
+          JNI (Java) OutputStream
+              |
+              v
+        Write Proxy Thread  <--  Blaze Opmode/Neutrino Passthrough
+         |             |
+         v             v 
+UART Write Thread     USB Write Thread
 ```
 
-The read system works in the opposite way. A read thread with a File Descriptor reads every packet, deserializes them, and sends them to the Read Proxy thread. It also performs some logic related to how we can only put one packet at a time on the RS485 line, but I don't want to talk about that. The read proxy thread determines (based on packet/message id) if the packet is for SDK or Blaze, and sends the packet to the correct channel. The Blaze opmode will hand the packet to the right handler.
+The read system works in the opposite way. A read thread with a File Descriptor (Or JVM access) reads every packet, deserializes them, and sends them to the Read Proxy thread. It also performs some logic related to how we can only put one packet at a time on the RS485 line, but I don't want to talk about that. The read proxy thread determines (based on packet/message id) if the packet is for SDK or Blaze, and sends the packet to the correct channel. The Blaze opmode will hand the packet to the right handler.
 
 ```text
-  UART Read Thread
-      |
-      v
-Read Proxy Thread --> Blaze Opmode
-      |
-      v
+  UART Read Thread     USB Read Thread
+          |             |
+          v             v
+         Read Proxy Thread --> Blaze Opmode
+          |
+          v
 JNI (Java) InputStream Buffer
 ```
 
@@ -131,4 +132,4 @@ The main issues are hardware based. For one, I don't support OTOS or any localiz
 Second, RS485 is still a problem. The technical issue is that RS485, the cable that connects most teams' Expansion and Control Hubs, is not bidirectional. This forces us to only write one packet to it at a time. This hurts a bit, but it's ultimately fine because drivetrains are usually on the Control Hub.
 Blaze does still offer improvements in this area though, and accessing the Expansion Hub is non-blocking as long as there is no packet in flight. If there is a packet in flight, the call will force you to wait until the last operation completes.
 
-Finally, I do not support Expansion Hub over USB. This is because Android's USB stack is complicated and difficult to support, our team doesn't use it, and you can get speedups over stock SDK by switching to Blaze and RS485.
+Finally, I do not support Expansion Hub over USB yet. This is because Android's USB stack is complicated and difficult to support, but recently I have been making headway.

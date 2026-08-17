@@ -1,19 +1,32 @@
 # BlazeFTC
 
-BlazeFTC is a (partial) Rust rewrite of the binary protocol used by the Rev Control and Expansion Hub in the First Tech Challenge, a high school robotics competition.
-Designed for speed, it offers the fastest possible loop times, thanks to it's direct hardware control, faster programming language, and "reactive" design.
+BlazeFTC is a (partial) Rust rewrite of the SDK of the FIRST Tech Challenge, a high school robotics competition.
+Designed for speed, it offers the fastest possible loop times of any public project, thanks to it's direct hardware control, faster programming language, and "reactive" design.
 It is capable of running in the context of a regular opmode, and it maintains compatibility with the FTC SDK, which can still issue commands while the BlazeFTC opmode is running.
-As of now, it should be considered to be in beta. Most of the code is there, but there's some bugs and design choices I would like input on, among other things. Actionable suggestions/pull requests are appreciated.
+As of now, it should be considered to be in beta. The code is there, but there's some bugs and design choices I would like input on, among other things. Actionable suggestions/pull requests are appreciated.
+
+- ✅ Competition Legal
+- ✅ Runs alongside SDK
+- ✅ Code in Java/Kotlin (Rust not required, see example below)
+- ✅ Parallel/nonblocking Writes (this is what Photon does)
+- ✅ Parallel Reads (unique to blaze) - Pinpoint and Bulk Reads
+- ✅ Exhub over RS485
+- ✅ PedroPathing integration
+- ⚠️ Exhub over USB (WIP, should be done before kickoff)
+- ⚠️ OTOS Localizer, Rev color sensor, other i2c devices not yet parallel
+- ⚠️ Servo Hub - "working" but unstable
 
 If you have questions, please check out [robotics.md](https://github.com/owenpmckenna/blaze_ftc/blob/master/robotics.md) which explains what this project is actually doing.
 If you want to write Rust opmodes, the Rust quickstart can be found [here](https://github.com/owenpmckenna/BlazeFtcQuickstart), but it's not needed to get speed boosts.
 Usage for Blaze in Java/Kotlin is explained below. Note that there is a normal way of using Blaze, which will require you to extend Blaze's DummyPlugOpMode, which itself extends LinearOpMode.
 The lower level usage will let you extend whichever OpMode class you want, but you will need to write more code and change a few more things in your software. 
-My hope is that other ergonomics project maintainers (NextFTC, SolversLib, etc.) will consider integrations to make usage easier for smaller/newer/less experienced teams. I will provide assistance if you need help making the integration.
+My hope is that other project maintainers (NextFTC, SolversLib, etc.) will consider integrations to make usage easier for smaller/newer/less experienced teams. I will provide assistance if you need help making the integration.
 
 ### Normal Usage
-First, add `implementation("dev.anygeneric:blazeftc:0.1.38")` and to your gradle dependencies.
-You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.38'`. Note that currently I only officially support Pedro 2 as of now. 
+First, add `maven { url = 'https://maven.anygeneric.dev/' }` to the `repositories` block at the top of your build.dependencies.gradle.
+
+Next, add `implementation "dev.anygeneric:blazeftc:0.1.57"` and to your dependencies. 
+You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.57'` if you're using the Pedro integration. Note that currently I only officially support Pedro 2 as of now. 
 If you are familiar with Pedro 3, Roadrunner, or any other pathing library, ping me @anygenericname and I'll get you a dependency (or help you make your own) in like 15 minutes max (it's very easy), or look at how the Pedro 2 version is implemented.
 
 Next, add the following class to your project. An explanation of the functions used is contained within the class in comments.
@@ -39,7 +52,7 @@ public class ExamplePedroSpeedLocalization extends DummyPlugOpMode {
         //You can pass whatever telemetry object in you want, including the split ones that go to a web dashboard.
         //However, you need to use the object it returns, and you should under no circumstances replace it with
         //`telemetry = initializeBlazeFTC(telemetry);` which replaces the OpMode's telemetry and breaks everything.
-        //Feel free to try and fix this, but it's out of scope for me, sorry.
+        //Alternatively, pass a no-op telemetry and ignore its output. You still need to call it though.
         Telemetry tele = initializeBlazeFTC(telemetry);
         //Normal manual cache setup.
         for (LynxModule i : hardwareMap.getAll(LynxModule.class))
@@ -131,6 +144,5 @@ BlazeFTC should be considered to be in beta. It works but it's missing some feat
 
 Anyway, in no particular order, several things need to be implemented/tested:
 + Expansion Hub via USB. Expansion hubs over RS485 are supported, and the architecture for USB support is mostly present. Currently, you need to use an RS485 cable. This is a high priority for fixing I just haven't had the ability to test it.
-+ Servos (in Rust). These are controlled by PWM and different servos seem to want different ranges. The code is there for the default case, I have no idea of it will work or not. I'm like, 20% confident these will work so I personally wouldn't touch them. If you would like to help me implement them, that would be much appreciated.
 + More I2C Devices. Pinpoints are implemented and work, but they're the only ones. Implementing more is not too hard, but I haven't had the chance and I don't have anything to test against. If you have an OTOS or would like to see 3 dead wheel localization and have time to test, ping me.
 + Pathing in Rust. This is not important, but it is something I'm interested in nonetheless. You can find the repo where I tried this over [here](https://github.com/owenpmckenna/sidestep).
