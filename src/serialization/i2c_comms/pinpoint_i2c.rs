@@ -230,6 +230,11 @@ impl PinpointSnapshot {
         data
     }
 }
+impl Into<Vec<u8>> for PinpointSnapshot {
+    fn into(self) -> Vec<u8> {
+        self.to_bytes()
+    }
+}
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
 enum PinpointRegister {
