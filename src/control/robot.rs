@@ -23,6 +23,7 @@ pub struct Robot {
     hub_1_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
     gp_handlers: Vec<Box<Mutex<dyn GamepadHandler>>>,
     property_handlers: Vec<Box<Mutex<dyn PropertyHandler>>>,
+    on_kill_handlers: Vec<Box<Mutex<dyn OnKillHandler>>>,
     kill_signal_txs: Vec<Sender<()>>,
     gamepad_receiver: &'static Receiver<(Vec<u8>, Vec<u8>)>,
     pub telemetry: &'static Telemetry,
@@ -57,6 +58,7 @@ impl Robot {
             hub_1_handlers: vec![],
             gp_handlers: vec![],
             property_handlers: vec![],
+            on_kill_handlers: vec![],
             kill_signal_txs: vec![],
             gamepad_receiver,
             telemetry,
@@ -194,7 +196,10 @@ impl Robot {
                 }
                 for i in &self.kill_signal_txs {
                     log::info!("killing... {:?}", i.send(()));
-                    //let _ = i.send(());//just swallow any disconnect errors
+                    let _ = i.send(());//just swallow any disconnect errors
+                }
+                for i in &self.on_kill_handlers {
+                    i.lock().unwrap().on_kill(&self);
                 }
                 reset_properties();
             }
@@ -265,6 +270,9 @@ impl Robot {
     }
     pub fn add_property_handler<D>(&mut self, func: D) where D: PropertyHandler + 'static {
         self.property_handlers.push(Box::new(Mutex::new(func)));
+    }
+    pub fn add_on_kill_handler<D>(&mut self, func: D) where D: OnKillHandler + 'static {
+        self.on_kill_handlers.push(Box::new(Mutex::new(func)));
     }
     pub fn add_i2c_device<Device: 'static, T: 'static>(&mut self, device: Box<Device>, handlers: Vec<Box<dyn I2CDeviceHandler<Device, T>>>) where Device: I2CDevice<T> {
         let both = I2CDevicePair { device, handlers };
@@ -370,9 +378,11 @@ pub trait BulkReadHandler: Send + UnwindSafe {
 pub trait PropertyHandler: Send + UnwindSafe {
     fn update(&mut self, robot: &Robot, key: &str, value: &str);
 }
+pub trait OnKillHandler: Send + UnwindSafe {
+    fn on_kill(&mut self, robot: &Robot);
+}
 pub struct MainThread {
     target: HashMap<TypeId, Box<dyn ThreadSafe>>,
-    ///target sender
     target_sender: Sender<Box<dyn ThreadSafe>>,
     state_receiver: Receiver<Box<dyn ThreadSafe>>,
     state: HashMap<TypeId, Box<dyn ThreadSafe>>,

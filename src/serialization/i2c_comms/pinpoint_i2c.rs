@@ -1,9 +1,11 @@
 use std::error::Error;
 use std::fmt::{Debug};
 use std::ops::Add;
-use std::sync::Mutex;
+use std::panic::UnwindSafe;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use crossbeam_channel::Sender;
 use num_enum::TryFromPrimitive;
 use crate::control::hardware::{Direction, LynxHub};
 use crate::serialization::command::Command;
@@ -19,7 +21,8 @@ pub struct PinpointI2C {
     hub: &'static LynxHub,
     bus: u8,
     i2c_addr: u8,
-    packets_in_flight: Mutex<Vec<u8>>
+    packets_in_flight: Arc<Mutex<Vec<u8>>>,
+    pub mistake_alert_sender: Option<Sender<Instant>>
 }
 impl PinpointI2C {
     fn write_register<T>(&self, register: PinpointRegister, number: T) -> &Self where T: ToLeBytes + Debug {
@@ -48,6 +51,11 @@ impl I2CDevice<PinpointSnapshot> for PinpointI2C {
             } else if let Command::Nack(reason) = &packet.payload_data {
                 log::trace!("got pinpoint PIF {} w/ NACK", packet.reference_number);
                 //i2c writing not done (fire_read failed). consume and send another packet
+                //remind scheduler to not send any packets for the next couple millis.
+                if let Some(channel) = &self.mistake_alert_sender {
+                    log::trace!("Got Pinpoint NACK, warning scheduler to slow down.");
+                    let _ = channel.send(Instant::now().add(Duration::from_millis(3)));
+                }
                 self.fire_read();
                 return I2CDeviceResult::Nack(reason.to_string())
             } else if let Command::Ack(_) = &packet.payload_data {
@@ -68,7 +76,8 @@ impl PinpointI2C {
             hub,
             bus,
             i2c_addr,
-            packets_in_flight: Mutex::new(vec![]),
+            packets_in_flight: Arc::new(Mutex::new(vec![])),
+            mistake_alert_sender: None
         }
     }
     fn add_pif(&self, id: u8) {
@@ -96,14 +105,17 @@ impl PinpointI2C {
             }
         }
     }
-    pub fn fire_bulk_read_request(&self) {
-        log::trace!("firing pinpoint bulk read req");
-        let cmd = LynxCommand::LynxI2CWriteReadMultipleBytesCommand(LynxI2CWriteReadMultipleBytesCommandData {
+    pub(crate) fn get_read_lynx_command(&self) -> LynxCommand {
+        LynxCommand::LynxI2CWriteReadMultipleBytesCommand(LynxI2CWriteReadMultipleBytesCommandData {
             i2c_bus: self.bus,
             i2c_addr_7bit: self.i2c_addr,
             bytes_to_read: 40,
             i2c_start_addr: 18,//magic value idk
-        });
+        })
+    }
+    pub fn fire_bulk_read_request(&self) {
+        log::trace!("firing pinpoint bulk read req");
+        let cmd = self.get_read_lynx_command();
         let pif = self.hub.send_lynx_packet(cmd);
 
         if let Some(sched_time) = Self::get_2nd_delay() {
@@ -111,6 +123,18 @@ impl PinpointI2C {
         } else {
             self.add_pif(pif);
         }
+    }
+    pub fn fire_bulk_read_req_func(&self) -> Box<dyn FnMut() + 'static + Send + Sync + UnwindSafe> {
+        let pin = PinpointI2C {
+            hub: self.hub,
+            bus: self.bus,
+            i2c_addr: self.i2c_addr,
+            packets_in_flight: self.packets_in_flight.clone(),
+            mistake_alert_sender: None,
+        };
+        Box::new(move || {
+            pin.fire_bulk_read_request();
+        })
     }
     fn fire_future_read(&self, schedule_time: u64) {
         log::trace!("firing pinpoint future read req");

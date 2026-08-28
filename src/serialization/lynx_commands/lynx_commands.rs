@@ -195,14 +195,14 @@ Ok: this is direct from ftcsdk
         int16_t     analog2_mV;
         int16_t     analog3_mV;
 */
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct LynxGetBulkDataResponseData {
     pub digital_inputs: u8,
     pub motor_status: u8,
     pub motors: [MotorData; 4],
     pub analog: [i16; 4]
 }
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub struct MotorData {
     pub position: i32,
     /**

@@ -7,69 +7,90 @@ use jni::errors::Error;
 use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::{jni_sig, jni_str, Env, JValue};
 use std::{str, thread};
+use std::fmt::Debug;
+use std::pin::pin;
 use std::time::Duration;
 use jni::sys::{jbyte, jsize};
 use crate::control::hardware::LynxHub;
 use crate::serialization::command_data::CommandData;
-use crate::serialization::lynx_commands::lynx_commands::LynxGetBulkDataResponseData;
+use crate::serialization::lynx_commands::base_lynx_command::LynxCommand::LynxGetBulkDataCommand;
+use crate::serialization::lynx_commands::lynx_commands::{LynxGetBulkDataCommandData, LynxGetBulkDataResponseData};
 use crate::telemetry::telemetry::{get_allowed_to_send_dangerous_packets, get_class_loader, load_class};
+use crate::threads::repeating_scheduler::Order;
 
 pub struct JNICrossPinpointHandler {
     snapshot_tx: Sender<PinpointSnapshot>,
     resend_rx: Receiver<bool>,
     sending: bool,
-    datas: usize
+    datas: usize,
+    scheduled: bool,
 }
 impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot> for JNICrossPinpointHandler {
     fn handle(&mut self, _: &Robot, device: &mut Box<PinpointI2C>, data: &PinpointSnapshot) {
         if self.datas < 5 {
             log::info!("got a pinpoint data! {}", self.datas)
         }
-        handle_keep_sending(self.resend_rx, &mut self.sending);
-        if self.sending {
+        handle_keep_sending(&self.resend_rx, &mut self.sending);
+        if self.sending && !self.scheduled {
             device.fire_bulk_read_request();
         }
         if let Err(it) =  self.snapshot_tx.send((*data).clone()) {
             log::info!("snapshot tx null!!! ignoring... {}", it);
-            //self.sending = false;
+            self.sending = false;
         }
         self.datas += 1;
     }
     //o=outer, i=inner
 }
 impl JNICrossPinpointHandler {
-    pub fn put_on_robot(robot: &mut Robot) -> Option<()> {
-        log::info!("running jni put on robot: {:?}, {:?}, {:?}",
+    pub fn put_on_robot(robot: &mut Robot, orders: &mut Vec<Order>) -> Option<()> {
+        log::info!("running jni put on robot: {:?}, {:?}, {:?}, {:?}",
             robot.get_property("internalPinpointHub"),
             robot.get_property("internalPinpointBus"),
-            robot.get_property("internalPinpointCallbackName")
+            robot.get_property("internalPinpointCallbackName"),
+            robot.get_property("internalPinpointUpdateFreq")
         );
         let hub = if robot.get_property("internalPinpointHub")?.eq_ignore_ascii_case("hub0") {
             robot.hub_0
         } else { robot.hub_1? };
 
         log::info!("abt to get pinpoint bus id");
-        let pinpoint = if let Ok(bus_id) = robot.get_property("internalPinpointBus")?.parse::<u8>() {
+        let mut pinpoint = if let Ok(bus_id) = robot.get_property("internalPinpointBus")?.parse::<u8>() {
             //0 <= bus_id <= 4, I think
             //i2c addr is hardcoded
             PinpointI2C::new(hub, bus_id, 49)
         } else {return None;};
-        log::info!("firing pinpoint!");
-        pinpoint.fire_bulk_read_request();
+
+        let (order_m_tx, order_m_rx) = unbounded();
+        let sch = if let Some(freq) = robot.get_property("internalPinpointUpdateFreq")
+                && hub.is_over_rs.is_none() {
+            let micros: u64 = freq.parse().unwrap_or(10_000);//10 ms default
+            let cmd = pinpoint.get_read_lynx_command();
+            let func = pinpoint.fire_bulk_read_req_func();
+            let order = Order::new(Duration::ZERO, Duration::from_micros(micros), func)
+                .set_pause_receiver(order_m_rx);
+            pinpoint.mistake_alert_sender = Some(order_m_tx);
+            orders.push(order);
+            true
+        } else {
+            log::info!("firing pinpoint!");
+            pinpoint.fire_bulk_read_request();
+            false
+        };
 
         let cb_name = robot.get_property("internalPinpointCallbackName")?;
-        let handler = Self::new(cb_name, robot);
+        let handler = Self::new(cb_name, robot, sch);
         robot.add_i2c_device(Box::new(pinpoint), vec![Box::new(handler)]);
         Some(())
     }
-    fn new(name: String, robot: &mut Robot) -> JNICrossPinpointHandler {
+    fn new(name: String, robot: &mut Robot, scheduled: bool) -> JNICrossPinpointHandler {
         log::info!("creating new jni cross handler!");
         let (snapshot_tx, snapshot_rx) = unbounded();
         let (resend_tx, resend_rx) = unbounded();
         let (kill_tx, kill_rx) = unbounded();
         robot.add_kill_signal_sender(kill_tx);
         spawn_java_thread(name, resend_tx, snapshot_rx, kill_rx);
-        JNICrossPinpointHandler { snapshot_tx, resend_rx, sending: true, datas: 0 }
+        JNICrossPinpointHandler { snapshot_tx, resend_rx, sending: true, datas: 0, scheduled }
     }
 }
 
@@ -78,15 +99,16 @@ pub struct JNICrossBulkReadHandler {
     resend_rx: Receiver<bool>,
     sending: bool,
     datas: usize,
-    hub: &'static LynxHub
+    hub: &'static LynxHub,
+    scheduled: bool,
 }
 impl BulkReadHandler for JNICrossBulkReadHandler {
     fn update(&mut self, robot: &Robot, data: &LynxGetBulkDataResponseData) {
         if self.datas < 5 {
             log::info!("got a br data! {}", self.datas)
         }
-        handle_keep_sending(self.resend_rx, &mut self.sending);
-        if self.sending {
+        handle_keep_sending(&self.resend_rx, &mut self.sending);
+        if self.sending && !self.scheduled {
             self.hub.send_bulk_read();
         }
         if let Err(it) =  self.bulk_data_tx.send((*data).clone()) {
@@ -97,7 +119,7 @@ impl BulkReadHandler for JNICrossBulkReadHandler {
     }
 }
 impl JNICrossBulkReadHandler {
-    pub fn put_on_robot(robot: &mut Robot, is_ctrl: bool) -> Option<()> {
+    pub fn put_on_robot(robot: &mut Robot, is_ctrl: bool, orders: &mut Vec<Order>) -> Option<()> {
         let ctrl = if is_ctrl { "chub" } else { "exhub" };
         let num = robot.get_property(&format!("attachBulkRead{}", ctrl))?
             .parse().unwrap_or(1);
@@ -110,27 +132,38 @@ impl JNICrossBulkReadHandler {
             robot.hub_0
         } else { robot.hub_1? };
 
-        log::info!("firing bulk reads!");
-        for _ in 0..num {
-            hub.send_bulk_read();
-            thread::sleep(Duration::from_millis(1));//start them staggered
-        }
+        let sched = if let Some(freq) = robot.get_property(&format!("bulkReadUpdateFreq{}", ctrl)) && is_ctrl {
+            let micros: u64 = freq.parse().unwrap_or(5_000);//5 ms default
+            log::info!("setting up scheduled bulk reads ch:{}, {} micros", is_ctrl, micros);
+            let order = Order::new(Duration::ZERO, Duration::from_micros(micros), Box::new(|| {
+                hub.send_bulk_read();
+            }));
+            orders.push(order);
+            true
+        } else {
+            log::info!("firing bulk reads!");
+            for _ in 0..num {
+                hub.send_bulk_read();
+                thread::sleep(Duration::from_millis(1)); //start them staggered
+            }
+            false
+        };
 
-        let handler = Self::new(callback_name, robot, hub);
+        let handler = Self::new(callback_name, robot, hub, sched);
         if is_ctrl {robot.add_hub_0_handler(handler)} else {robot.add_hub_1_handler(handler)};
         Some(())
     }
-    fn new(name: String, robot: &mut Robot, hub: &'static LynxHub) -> Self {
+    fn new(name: String, robot: &mut Robot, hub: &'static LynxHub, scheduled: bool) -> Self {
         log::info!("creating new jni cross handler! (br)");
         let (bulk_data_tx, bulk_data_rx) = unbounded();
         let (resend_tx, resend_rx) = unbounded();
         let (kill_tx, kill_rx) = unbounded();
         robot.add_kill_signal_sender(kill_tx);
         spawn_java_thread(name, resend_tx, bulk_data_rx, kill_rx);
-        Self { bulk_data_tx, resend_rx, sending: true, datas: 0, hub }
+        Self { bulk_data_tx, resend_rx, sending: true, datas: 0, hub, scheduled }
     }
 }
-fn handle_keep_sending(resend_rx: Receiver<bool>, sending: &mut bool) {
+fn handle_keep_sending(resend_rx: &Receiver<bool>, sending: &mut bool) {
     match resend_rx.try_recv() {
         Ok(it) => {
             if *sending && !it {
@@ -152,7 +185,7 @@ fn handle_keep_sending(resend_rx: Receiver<bool>, sending: &mut bool) {
         }
     }
 }
-fn spawn_java_thread<T>(name: String, resend_tx: Sender<bool>, data_rx: Receiver<T>, kill_rx: Receiver<()>) where T: Into<Vec<u8>> {
+fn spawn_java_thread<T>(name: String, resend_tx: Sender<bool>, data_rx: Receiver<T>, kill_rx: Receiver<()>) where T: Into<Vec<u8>> + Send + Debug + 'static {
     let _ = thread::spawn(move || {
         catch(move || {
             log::info!("spawning java talk thread... br");
@@ -166,7 +199,7 @@ fn spawn_java_thread<T>(name: String, resend_tx: Sender<bool>, data_rx: Receiver
         }, "java closure thread");
     });
 }
-fn java_thread<T>(env: &mut Env, name: String, resend_tx: Sender<bool>, data_rx: Receiver<T>, kill_rx: Receiver<()>) where T: Into<Vec<u8>> {
+fn java_thread<T>(env: &mut Env, name: String, resend_tx: Sender<bool>, data_rx: Receiver<T>, kill_rx: Receiver<()>) where T: Into<Vec<u8>> + Send + Debug + 'static {
     log::info!("running java thread!!!");
     let resend_tx = resend_tx;//force keep it? idk.
     let object: &JObject = BLAZEFTC_CLASS.get().unwrap().as_obj();
@@ -217,5 +250,5 @@ fn java_thread<T>(env: &mut Env, name: String, resend_tx: Sender<bool>, data_rx:
                 }
             }
     }
-    log::info!("java thread returning (pinpoint) dc: {:?}/{:?}", kill_rx.try_recv(), data_rx.try_recv());
+    log::info!("java thread returning dc: {:?}/{:?}", kill_rx.try_recv(), data_rx.try_recv());
 }

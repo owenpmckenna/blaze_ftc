@@ -108,8 +108,10 @@ impl Module {
         ask_for_interface_query();
         let req_cmd = Command::QueryInterface(QueryInterfaceData::new_deka());
         let req_packet = Packet::new(req_cmd, id, 0);
+        log::info!("about to try and get module info for id {}", id);
         out.send(req_packet.into()).unwrap();
         let pack = Self::try_get_packet(receiver);
+        log::info!("got module info for id {}, {}", id, pack);
         Self::from_deka_discovery(id, &pack, is_parent)
     }
 }

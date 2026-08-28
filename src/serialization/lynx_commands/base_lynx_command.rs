@@ -73,7 +73,7 @@ impl Display for LynxCommandData {
             "LynxCommand[module:{},command:[",
             self.module.module_addr
         )?;
-        with_command_data!(&self.command, |x| x.fmt(f))?;
+        with_command_data!(&self.command, |x| Display::fmt(&x, f))?;
         write!(f, "]]")
     }
 }

@@ -19,6 +19,7 @@ pub fn generate_read_sdk_proxy(
     running: &'static AtomicBool,
     id: u8
 ) -> (Receiver<Packet>, Receiver<Packet>, Sender<Packet>) {
+    log::info!("starting read proxy thread... {}", id);
     let (regular_read_sender, regular_read_receiver) = unbounded::<Packet>();
     let (ftcsdk_read_sender, ftcsdk_read_receiver) = unbounded::<Packet>();
     let sdk_receive_input = ftcsdk_read_sender.clone();
@@ -30,13 +31,13 @@ pub fn generate_read_sdk_proxy(
             let mut had_second_packet = false;
             while running.load(Ordering::SeqCst) {
                 let mut d = to_read.recv().expect(&format!("couldn't read from channel {}", id));
-                if let Command::QueryInterfaceResponse(it) = &d.payload_data && has_interface_query() {
-                    log::info!("Got query interface response data! Writing directly to our code!");
+                if let Command::QueryInterfaceResponse(_) = &d.payload_data && has_interface_query() {
+                    log::info!("Got query interface response data! Writing directly to our code! {}", id);
                     regular_read_sender.send(d).expect("could not send on QIR");
                     continue;
                 }
                 if first {
-                    log::info!("received first packet. not overwriting.");
+                    log::info!("received first packet. not overwriting. {}", id);
                     first_packet = Some(d.clone());
                     first = false;
                     ftcsdk_read_sender.send(d).expect("could not send first packet");
@@ -45,11 +46,11 @@ pub fn generate_read_sdk_proxy(
                 if !had_second_packet {
                     let val = first_packet.as_ref().expect("firstpacket null?");
                     if *val == d {
-                        log::info!("haven't received a different packet yet! reading normally...");
+                        log::info!("haven't received a different packet yet! reading normally... {}", id);
                         ftcsdk_read_sender.send(d).expect("could not send on ftcscksender"); //if we haven't received another packet, they are still looking for this one and we should keep sending it
                         continue;
                     } else {
-                        log::info!("finally received second packet in read proxy!");
+                        log::info!("finally received second packet in read proxy! {}", id);
                         had_second_packet = true; //continue!
                     }
                 }

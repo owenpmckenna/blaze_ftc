@@ -4,7 +4,7 @@ use crate::{catch, BLAZEFTC_CLASS, JAVA_VM, RUNNING};
 use core::slice;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use jni::objects::{JByteArray, JByteBuffer, JClass, JObject};
-use jni::sys::{jint, jsize};
+use jni::sys::{jbyte, jint, jsize};
 use jni::{jni_sig, jni_str, AttachConfig, AttachGuard, Env, JValue, ScopeToken};
 use log::log;
 use std::error::Error;
@@ -45,15 +45,15 @@ fn do_write_thread(env: &mut Env, tx: &mut Receiver<Packets>, class: &JClass, ve
         buf = tbuf;
         bytes += add;
     }
-    log::info!("usb writing {} packets as {} bytes", packets_len, bytes);
+    log::trace!("usb writing {} packets as {} bytes", packets_len, bytes);
     let arr = env.byte_array_from_slice(&vec[0..bytes]).expect("could not create byte array from slice");
     //    public static void writeToUsb(byte[] b, int bytes)
     env.call_static_method(class,
                                         jni_str!("writeToUsb"),
                                         jni_sig!("([B)V"),
-                                        &[JValue::Object(&*arr)])
+                                        &[JValue::Object(&arr)])
         .expect("call to writeToUsb fail - usb jni");
-
+    env.delete_local_ref(arr);
 }
 pub fn start_usb_read_thread() -> Receiver<Packet> {
     let (tx, rx) = unbounded();
@@ -110,15 +110,27 @@ fn do_read_thread(env: &mut Env, blazeftc: &JClass, vec: &mut [u8], bytes: &JByt
     do_read(env, blazeftc, vec, bytes, pos, 4 - pos);
     let packet_len = u16::from_le_bytes(vec[2..4].try_into().expect("could not convert bytes type")) as usize;
     do_read(env, blazeftc, vec, bytes, 4, (packet_len - 4));
-    Packet::from_data(&vec[0..packet_len])
+    let pack = Packet::from_data(&vec[0..packet_len]);
+    println!("USB READ PACKET!!! {:?}", pack);
+    pack
 }
 fn do_read(env: &mut Env, blaze: &JClass, vec: &mut [u8], bytes: &JByteArray, pos: usize, len: usize) {
+    let mut tmp_vec = Vec::with_capacity(len);
     match env.call_static_method(blaze,
                                      jni_str!("readFromUsbExact"),
                                      jni_sig!("([BII)V"),
                                      &[JValue::Object(bytes), JValue::Int(pos as jint), JValue::Int(len as jint)])
-        .map(|_| bytes.get_region(env, pos as jsize, bytes[pos..pos + len])).flatten() {
-        Ok(_) => {}
+        .map(|_| {
+            let mut jb = vec![0 as jbyte; len];
+            bytes.get_region(env, pos as jsize, &mut jb)?;
+            Ok(jb)
+        }).flatten() {
+        Ok(it) => {
+            for i in 0..len {
+                tmp_vec.push(it[i] as u8);
+                vec[pos + i] = it[i] as u8
+            }
+        }
         Err(it) => {
             log::info!("ERROR: failed on USB read: {}", it);
             RUNNING.store(false, Ordering::SeqCst);//uhh just kill it idk
@@ -126,4 +138,5 @@ fn do_read(env: &mut Env, blaze: &JClass, vec: &mut [u8], bytes: &JByteArray, po
             panic!("Failure while: {}", "USB Read Thread")
         }
     }
+    println!("just read from usb bytes: {:?}", tmp_vec)
 }

@@ -12,7 +12,7 @@ As of now, it should be considered to be in beta. The code is there, but there's
 - ✅ Parallel Reads (unique to blaze) - Pinpoint and Bulk Reads
 - ✅ Exhub over RS485
 - ✅ PedroPathing integration
-- ⚠️ Exhub over USB (WIP, should be done before kickoff)
+- ⚠️ Exhub over USB (active WIP, working but extremely unstable)
 - ⚠️ OTOS Localizer, Rev color sensor, other i2c devices not yet parallel
 - ⚠️ Servo Hub - "working" but unstable
 
@@ -143,6 +143,6 @@ abstract class DummyPlugOpMode : LinearOpMode() {
 BlazeFTC should be considered to be in beta. It works but it's missing some features. Most things Neutrino depends on are fine but actual usability in BlazeFTC isn't quite there (eg. no pathing library exists yet, and the ergonomics aren't great all around but I'm working on it).
 
 Anyway, in no particular order, several things need to be implemented/tested:
-+ Expansion Hub via USB. Expansion hubs over RS485 are supported, and the architecture for USB support is mostly present. Currently, you need to use an RS485 cable. This is a high priority for fixing I just haven't had the ability to test it.
++ Expansion Hub via USB. Expansion hubs over RS485 are supported, and the architecture for USB support is mostly present. Currently, you need to use an RS485 cable. This is a high priority for fixing.
 + More I2C Devices. Pinpoints are implemented and work, but they're the only ones. Implementing more is not too hard, but I haven't had the chance and I don't have anything to test against. If you have an OTOS or would like to see 3 dead wheel localization and have time to test, ping me.
 + Pathing in Rust. This is not important, but it is something I'm interested in nonetheless. You can find the repo where I tried this over [here](https://github.com/owenpmckenna/sidestep).

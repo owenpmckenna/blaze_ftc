@@ -105,71 +105,84 @@ fn setup_usb_port() -> (Sender<Packets>, Receiver<Packet>, Proxy) {
     let read_rx = start_usb_read_thread();
     Proxy::new(write_tx, read_rx, &RUNNING, 1)
 }
+fn initializeMostHw(env: &mut Env, telemetry: JObject) -> Result<(), jni::errors::Error> {
+    BLAZEFTC_CLASS.get_or_init(|| env.new_global_ref(telemetry).unwrap());
+    {
+        let svh = get_servo_hubs_init_data();
+        let hubs = SERVO_HUBS.get_or_init(|| svh.clone()).len();
+        log::info!("remembered {} s hubs", hubs);
+    }
+
+    let vm = env.get_java_vm().unwrap();
+    match JAVA_VM.set(vm) {
+        Ok(_) => { log::info!("stored javavm!") }
+        Err(it) => { log::error!("could not store javavm!") }
+    }
+    // Now wrap it in Rust I/O
+    //let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
+
+    //let path: String = env.get_string(name).expect("Invalid string").into();
+
+    //let file = File::open(path).expect("Failed to open file");
+    call_close_object(env);
+    log::info!("acquiring port...");
+    let ctrl_hub_init = CTRL_HUB_MODULE_INIT_DATA.get().expect("could not get main module data");
+    //let write_fd: RawFd = unsafe { libc::dup(read_fd) };
+    //let read_fd: RawFd = unsafe { libc::dup(write_fd) };
+    //let write_fd = read_fd;
+    //let mut port_read = unsafe { SerialStream::from_raw_fd(read_fd) };
+    //let mut port_write = unsafe { SerialStream::from_raw_fd(write_fd) };
+    //PROXY.get_or_init(|| proxy);
+    //here
+    let (write_tx, read_rx, proxy) = setup_port(ctrl_hub_init.0.clone());
+    GAMEPAD_CHANNELS.get_or_init(|| unbounded());
+
+    let ctrl_hub_module = Module::generate_module(ctrl_hub_init.1 as u8, true, &write_tx, &read_rx);
+    let ctrl_hub = LynxHub::new(ctrl_hub_module, write_tx.clone(), UnderlyingHw::DirectProxy(proxy), read_rx.clone(), false);
+    HUB_0.set(ctrl_hub).expect("couldn't set ctrl_hub");
+
+    if let Some(it) = EX_HUB_MODULE_INIT_DATA.get() {
+        log::info!("Found expansion hub.");
+        if it.0 == HubLocation::RS485 {
+            let ctrl_hub = HUB_0.get().unwrap();
+            let ex_hub_module = Module::generate_module(it.1 as u8, false, &ctrl_hub.sender, &ctrl_hub.receiver);
+            let ex_hub = LynxHub::new(ex_hub_module, write_tx, UnderlyingHw::OtherHub(ctrl_hub), read_rx, true);
+            HUB_1.set(ex_hub).expect("could not set ex hub!");
+            log::info!("485SET EXPANSION HUB: {:?}", HUB_1.get());
+        }
+    } else { log::info!("No expansion hub."); }
+    Ok(())
+}
+fn initializeUsbExhub(it: &(HubLocation, i32)) {
+    let (write_tx, read_rx, proxy) = setup_usb_port();
+    let ex_hub_module = Module::generate_module(it.1 as u8, true, &write_tx, &read_rx);
+    let ex_hub = LynxHub::new(ex_hub_module, write_tx, UnderlyingHw::DirectProxy(proxy), read_rx, false);
+    HUB_1.set(ex_hub).expect("could not set ex hub!");
+    log::info!("usbSET EXPANSION HUB: {:?}", HUB_1.get());
+}
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_initialize(
     mut env: EnvUnowned,
     _class: JClass,
-    telemetry: JObject
+    telemetry: JObject,
+    isOnUsb: jboolean
 ) {
     log::info!("Hello from RUST!");
     env.with_env(|env| -> Result<_, jni::errors::Error> {
         match JAVA_VM.get() {
-            None => { log::info!("uninitialized! grabbing hardware..."); }
+            None => {
+                log::info!("uninitialized! grabbing hardware...");
+            }
             Some(_) => {
-                log::info!("Already initialized! --- skipping...");
+                if isOnUsb && let Some(config) = EX_HUB_MODULE_INIT_DATA.get() && HUB_1.get().is_none() {
+                    initializeUsbExhub(config);
+                } else {
+                    log::info!("Already initialized! --- skipping...");
+                }
                 return Ok(());
             }
         }
-        BLAZEFTC_CLASS.get_or_init(|| env.new_global_ref(telemetry).unwrap());
-        {
-            let svh = get_servo_hubs_init_data();
-            let hubs = SERVO_HUBS.get_or_init(|| svh.clone()).len();
-            log::info!("remembered {} s hubs", hubs);
-        }
-
-        let vm = env.get_java_vm().unwrap();
-        match JAVA_VM.set(vm) {
-            Ok(_) => { log::info!("stored javavm!") }
-            Err(it) => { log::error!("could not store javavm!") }
-        }
-        // Now wrap it in Rust I/O
-        //let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-
-        //let path: String = env.get_string(name).expect("Invalid string").into();
-
-        //let file = File::open(path).expect("Failed to open file");
-        call_close_object(env);
-        log::info!("acquiring port...");
-        let ctrl_hub_init = CTRL_HUB_MODULE_INIT_DATA.get().expect("could not get main module data");
-        //let write_fd: RawFd = unsafe { libc::dup(read_fd) };
-        //let read_fd: RawFd = unsafe { libc::dup(write_fd) };
-        //let write_fd = read_fd;
-        //let mut port_read = unsafe { SerialStream::from_raw_fd(read_fd) };
-        //let mut port_write = unsafe { SerialStream::from_raw_fd(write_fd) };
-        //PROXY.get_or_init(|| proxy);
-        //here
-        let (write_tx, read_rx, proxy) = setup_port(ctrl_hub_init.0.clone());
-        GAMEPAD_CHANNELS.get_or_init(|| unbounded());
-
-        let ctrl_hub_module = Module::generate_module(ctrl_hub_init.1 as u8, true, &write_tx, &read_rx);
-        let ctrl_hub = LynxHub::new(ctrl_hub_module, write_tx.clone(), UnderlyingHw::DirectProxy(proxy), read_rx.clone(), false);
-        HUB_0.set(ctrl_hub).expect("couldn't set ctrl_hub");
-
-        if let Some(it) = EX_HUB_MODULE_INIT_DATA.get() {
-            log::info!("Found expansion hub.");
-            if it.0 == HubLocation::RS485 {
-                let ctrl_hub = HUB_0.get().unwrap();
-                let ex_hub_module = Module::generate_module(it.1 as u8, false, &ctrl_hub.sender, &ctrl_hub.receiver);
-                let ex_hub = LynxHub::new(ex_hub_module, write_tx, UnderlyingHw::OtherHub(ctrl_hub), read_rx, true);
-                HUB_1.set(ex_hub).expect("could not set ex hub!");
-            } else {
-                let (write_tx, read_rx, proxy) = setup_usb_port();
-                let ex_hub_module = Module::generate_module(it.1 as u8, false, &write_tx, &read_rx);
-                let ex_hub = LynxHub::new(ex_hub_module, write_tx, UnderlyingHw::DirectProxy(proxy), read_rx, false);
-                HUB_1.set(ex_hub).expect("could not set ex hub!");
-            }
-        } else { log::info!("No expansion hub."); }
-        Ok(())
+        initializeMostHw(env, telemetry)
     }).resolve::<ThrowRuntimeExAndDefault>();
 }
 
@@ -479,7 +492,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_read(
     connection_number: jint
 ) -> jint {
     env.with_env(|env| -> Result<jint, jni::errors::Error> {
-        log::trace!("ftc: waiting for data...");
+        log::trace!("ftc: waiting for data... cn{}, len{}, off{}", connection_number, len, off);
         let hub = match HUB_1.get() {
             None => {HUB_0.get().unwrap()}
             Some(it) => {

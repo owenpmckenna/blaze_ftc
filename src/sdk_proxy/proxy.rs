@@ -39,7 +39,7 @@ pub struct Proxy {
 impl Proxy {
     pub fn new(direct_send: Sender<Packets>, direct_receive: Receiver<Packet>, running: &'static AtomicBool, id: u8) -> (Sender<Packets>, Receiver<Packet>, Proxy) {
         let ftc_packets = Arc::new(Mutex::new(Vec::with_capacity(5)));
-        let (send, sdk_send, message_list) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running);
+        let (send, sdk_send, message_list) = generate_write_sdk_proxy(direct_send, ftc_packets.clone(), running, id);
         let (receive, sdk_receive, sdk_receive_input) = generate_read_sdk_proxy(direct_receive, ftc_packets.clone(), running, id);
         (send, receive, Proxy {
             running,
@@ -90,7 +90,7 @@ impl Proxy {
             data.checksum = data.checksum();
             let id = data.packet_id;
             let data: Vec<u8> = data.into();
-            log::trace!("got packet for ftc! p id:{}, len:{}", id, data.len());
+            log::trace!("got packet for ftc in proxy! p id:{}, len:{}", id, data.len());
             data.into_iter().for_each(|x| tx.send(x).unwrap());
         }
 

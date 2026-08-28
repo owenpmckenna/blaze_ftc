@@ -46,6 +46,7 @@ pub fn generate_write_sdk_proxy(
     to_write: Sender<Packets>,
     packets_to_watch: Arc<Mutex<Vec<IdTransform>>>,
     running: &'static AtomicBool,
+    id: u8
 ) -> (Sender<Packets>, Sender<Packet>, Arc<MessageList>) {
     let (regular_tx, regular_rx) = unbounded::<Packets>();
     let (ftcsdk_tx, ftcsdk_rx) = unbounded::<Packet>();
@@ -59,7 +60,7 @@ pub fn generate_write_sdk_proxy(
         }) {
             Ok(_) => {}
             Err(it) => {
-                log::info!("ERROR IN WRITE SDK PROXY");
+                log::info!("ERROR IN WRITE SDK PROXY {}", id);
                 if let Some(s) = it.downcast_ref::<&str>() {
                     log::info!("Caught panic: {}", s);
                 } else if let Some(s) = it.downcast_ref::<String>() {
