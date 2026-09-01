@@ -243,10 +243,10 @@ mod tests {
 
     #[test]
     fn packet_layout() {
-        println!("Packet size: {}", std::mem::size_of::<Packet>());
-        println!("Packet alignment: {}", std::mem::align_of::<Packet>());
-        println!("Command size: {}", std::mem::size_of::<Command>());
-        println!("Command alignment: {}", std::mem::align_of::<Command>());
+        println!("Packet size: {}", size_of::<Packet>());
+        println!("Packet alignment: {}", align_of::<Packet>());
+        println!("Command size: {}", size_of::<Command>());
+        println!("Command alignment: {}", align_of::<Command>());
         println!("payload_data: {}", offset_of!(Packet, payload_data));
         println!("checksum: {}", offset_of!(Packet, checksum));
     }

@@ -2,8 +2,8 @@ use crate::serialization::command::null_term_to_string;
 use crate::serialization::command_data::CommandData;
 use crate::serialization::command_utils::{RESPONSE_BIT, StandardCommands};
 use nix::NixPath;
+use num_enum::TryFromPrimitive;
 use std::fmt::{Display, Formatter};
-use num_enum::{TryFromPrimitive, TryFromPrimitiveError};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnknownData {
