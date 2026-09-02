@@ -1,7 +1,7 @@
 use crate::control::robot::{BulkReadHandler, Robot};
 use crate::serialization::i2c_comms::i2c_device::I2CDeviceHandler;
 use crate::serialization::i2c_comms::pinpoint_i2c::{PinpointI2C, PinpointSnapshot};
-use crate::{catch, get_servo_hubs_init_data, BLAZEFTC_CLASS, JAVA_VM};
+use crate::{catch, get_servo_hubs_init_data, BLAZEFTC_CLASS, JAVA_VM, HUB_1};
 use crossbeam_channel::{select, unbounded, Receiver, Sender, TryRecvError};
 use jni::errors::Error;
 use jni::objects::{JByteArray, JClass, JObject, JString};
@@ -132,7 +132,9 @@ impl JNICrossBulkReadHandler {
             robot.hub_0
         } else { robot.hub_1? };
 
-        let sched = if let Some(freq) = robot.get_property(&format!("bulkReadUpdateFreq{}", ctrl)) && is_ctrl {
+        log::info!("get prop {}: {:?}", format!("bulkReadUpdateFreq{}", ctrl), robot.get_property(&format!("bulkReadUpdateFreq{}", ctrl)));
+        let allowed = is_ctrl || (HUB_1.get().map(|it| it.is_over_rs.is_none()) == Some(true));
+        let sched = if let Some(freq) = robot.get_property(&format!("bulkReadUpdateFreq{}", ctrl)) && allowed {
             let micros: u64 = freq.parse().unwrap_or(5_000);//5 ms default
             log::info!("setting up scheduled bulk reads ch:{}, {} micros", is_ctrl, micros);
             let order = Order::new(Duration::ZERO, Duration::from_micros(micros), Box::new(|| {
