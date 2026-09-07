@@ -18,7 +18,7 @@ use crate::telemetry::telemetry::Telemetry;
 
 pub struct Robot {
     pub hub_0: &'static LynxHub,
-    pub hub_1: Option<&'static LynxHub>,//optional expansion hub. not tested
+    pub hub_1: Option<&'static LynxHub>,
     hub_0_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
     hub_1_handlers: Vec<Box<Mutex<dyn BulkReadHandler>>>,
     gp_handlers: Vec<Box<Mutex<dyn GamepadHandler>>>,

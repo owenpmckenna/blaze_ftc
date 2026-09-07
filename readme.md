@@ -12,15 +12,22 @@ As of now, it should be considered to be in beta. The code is there, but there's
 - ✅ Parallel Reads (unique to blaze) - Pinpoint and Bulk Reads
 - ✅ Exhub over RS485
 - ✅ PedroPathing 2/3 integration
-- ⚠️ Exhub over USB (working, still a bit shaky so active WIP)
+- ✅ Exhub over USB (working but ping me if you have issues)
 - ⚠️ OTOS Localizer, Rev color sensor, other i2c devices not yet parallel
-- ⚠️ Servo Hub - "working" but unstable
+- ⚠️ Servo Hub - working but unstable
 
 If you have questions, please check out [robotics.md](https://github.com/owenpmckenna/blaze_ftc/blob/master/robotics.md) which explains what this project is actually doing.
 If you want to write Rust opmodes, the Rust quickstart can be found [here](https://github.com/owenpmckenna/BlazeFtcQuickstart), but it's not needed to get speed boosts.
 Usage for Blaze in Java/Kotlin is explained below. Note that there is a normal way of using Blaze, which will require you to extend Blaze's DummyPlugOpMode, which itself extends LinearOpMode.
 The lower level usage will let you extend whichever OpMode class you want, but you will need to write more code and change a few more things in your software. 
 My hope is that other project maintainers (NextFTC, SolversLib, etc.) will consider integrations to make usage easier for smaller/newer/less experienced teams. I will provide assistance if you need help making the integration.
+
+### Should you use Blaze?
+FTC teams have been building and programming robots for years without Blaze. If you don't use it, you will be fine. 
+*However*, loop times do affect robot performance, and Blaze is capable of significantly improving loop times on many different hardware setups:
+- Single Control Hub - accelerated motor writes, Read/Write operation ordering may improve Pinpoint, multiple simultaneous bulk reads will be much faster
+- Control Hub + Exhub over RS485 - Communication with Control Hub is still possible while waiting on RS485. You should be able to run your drivetrain loops at 200+ hz despite RS485. Exhub loops will also be faster, they don't have to wait on drivetrain. This assumes your drivetrain is on the Control Hub, as it should be.
+- Control Hub + Exhub over USB - Run pathing/drivetrain separate from exhub so they don't wait on each other. Multiple bulk reads can be in flight on any single hub, boosting loops to 1khz in trivial conditions.
 
 ### Normal Usage
 First, add `maven { url = 'https://maven.anygeneric.dev/' }` to the `repositories` block at the top of your build.dependencies.gradle.
