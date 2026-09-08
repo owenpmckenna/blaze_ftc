@@ -30,6 +30,8 @@ FTC teams have been building and programming robots for years without Blaze. If 
 - Control Hub + Exhub over USB w/ Pinpoint - Run flywheel, auxiliary motor PIDs at 800-900 Hz (usb is slower), with pinpoint-dependent operations between 200 and 250 hz.  
 - Control Hub + Exhub over USB w/ 3-wheel odom - Run flywheel, auxiliary motor PIDs at 800-900 Hz, and get odometry at almost 1 kHz.
 
+Note that these numbers are based on tests in "lab conditions" as I haven't had the hardware to put Blaze through its paces fully. 
+If you can confirm or refute any of this data in practical conditions let me know. I will update this list as I collect more tests.
 
 ### Normal Usage
 First, add `maven { url = 'https://maven.anygeneric.dev/' }` to the `repositories` block at the top of your build.dependencies.gradle.
