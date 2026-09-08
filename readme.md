@@ -25,9 +25,11 @@ My hope is that other project maintainers (NextFTC, SolversLib, etc.) will consi
 ### Should you use Blaze?
 FTC teams have been building and programming robots for years without Blaze. If you don't use it, you will be fine. 
 *However*, loop times do affect robot performance, and Blaze is capable of significantly improving loop times on many different hardware setups:
-- Single Control Hub - accelerated motor writes, Read/Write operation ordering may improve Pinpoint, multiple simultaneous bulk reads will be much faster
-- Control Hub + Exhub over RS485 - Communication with Control Hub is still possible while waiting on RS485. You should be able to run your drivetrain loops at 200+ hz despite RS485. Exhub loops will also be faster, they don't have to wait on drivetrain. This assumes your drivetrain is on the Control Hub, as it should be.
-- Control Hub + Exhub over USB - Run pathing/drivetrain separate from exhub so they don't wait on each other. Multiple bulk reads can be in flight on any single hub, boosting loops to 1khz in trivial conditions.
+- Control Hub + Exhub over RS485 w/ Pinpoint - Blaze makes communication with Control Hub still possible while waiting on RS485. You should be able to run your drivetrain loops at 200+ hz despite the RS485 line. Exhub loops will also be faster, they don't have to wait on drivetrain. This assumes your drivetrain is on the Control Hub.
+- Control Hub + Exhub over RS485 w/ 3-wheel odom - Blaze can run bulk reads at upwards of 1 kHz. RS485 cannot be improved by much but if you're using bulk reads for localization, Blaze will make your software much faster.
+- Control Hub + Exhub over USB w/ Pinpoint - Run flywheel, auxiliary motor PIDs at 800-900 Hz (usb is slower), with pinpoint-dependent operations between 200 and 250 hz.  
+- Control Hub + Exhub over USB w/ 3-wheel odom - Run flywheel, auxiliary motor PIDs at 800-900 Hz, and get odometry at almost 1 kHz.
+
 
 ### Normal Usage
 First, add `maven { url = 'https://maven.anygeneric.dev/' }` to the `repositories` block at the top of your build.dependencies.gradle.
