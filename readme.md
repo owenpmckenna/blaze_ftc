@@ -36,60 +36,30 @@ If you can confirm or refute any of this data in practical conditions let me kno
 ### Normal Usage
 First, add `maven { url = 'https://maven.anygeneric.dev/' }` to the `repositories` block at the top of your build.dependencies.gradle.
 
-Next, add `implementation "dev.anygeneric:blazeftc:0.1.59"` and to your dependencies. 
-You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.59'` if you're using the Pedro 2 integration. `implementation 'dev.anygeneric:blazeftc_pedro3:0.1.59'` has Pedro 3 integration.
+Next, add `implementation "dev.anygeneric:blazeftc:0.1.61"` and to your dependencies. 
+You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.61'` if you're using the Pedro 2 integration. `implementation 'dev.anygeneric:blazeftc_pedro3:0.1.61'` has Pedro 3 integration.
 If you are familiar with Roadrunner or any other pathing library, ping me @anygenericname and I'll get you a dependency (or help you make your own) in like 15 minutes max (it's very easy), or look at how the Pedro 2 version is implemented.
 
-Next, add the following class to your project. An explanation of the functions used is contained within the class in comments.
+Next, add one of the following classes to your project. The DummyPlugOpMode class extends LinearOpMode, or if you'd rather use OpMode use the second example.
 ```java
-import com.pedropathing.follower.Follower;
-import com.pedropathing.geometry.BezierLine;
-import com.pedropathing.geometry.Pose;
-import com.pedropathing.paths.Path;
-import com.qualcomm.hardware.lynx.LynxModule;
-import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-import com.qualcomm.robotcore.util.ElapsedTime;
-
-import org.firstinspires.ftc.robotcore.external.Telemetry;
-import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
-
-import dev.anygeneric.blazeftc_pedro.PedroSingleDataLocalizer;
-
 @TeleOp(name = "Example Pedro High Speed Localization")
 public class ExamplePedroSpeedLocalization extends DummyPlugOpMode {
     @Override
     public void runOpModeInBlaze() {
-        //this does several important things internally. You *must* call it before anything else.
-        //You can pass whatever telemetry object in you want, including the split ones that go to a web dashboard.
-        //However, you need to use the object it returns, and you should under no circumstances replace it with
-        //`telemetry = initializeBlazeFTC(telemetry);` which replaces the OpMode's telemetry and breaks everything.
-        //Alternatively, pass a no-op telemetry and ignore its output. You still need to call it though.
-        Telemetry tele = initializeBlazeFTC(telemetry);
-        //Normal manual cache setup.
-        for (LynxModule i : hardwareMap.getAll(LynxModule.class))
-            i.setBulkCachingMode(LynxModule.BulkCachingMode.MANUAL);
-        //this sends motor cmds directly to blaze, skipping Java serialization completely
-        //it reaches into the hwMap to replace the motors there so don't pull the motors out/init pedro before calling it
+        initializeBlazeFTC();
         engageMotorAcceleration();
-        //we create the follower. NOTE that this uses the pinpoint java driver to set all your settings and offsets
+        //we create the pedro2 follower. NOTE that this uses the pinpoint java driver to set all your settings and offsets
         Follower follower = Constants.createFollower(hardwareMap);
         waitForStart();
         ElapsedTime elt = new ElapsedTime();
-        //the closure you pass will be called every time we get new data.
-        //you may call `setup` at any time during the opmode, but it *must* be called before runBlazeFTC(0);
-        //if you call it later, it will be ignored.
-        //Use Pedro3SingleDataLocalizer if using Pedro3.
         PedroSingleDataLocalizer.setup(follower, () -> {
-            tele.addData("pedro loop time (ms)", elt.milliseconds());
+            telemetry.addData("pedro loop time (ms)", elt.milliseconds());
             elt.reset();
             follower.update();
-            tele.addData("x,y", follower.getPose().getX() + ", " + follower.getPose().getY());
+            telemetry.addData("x,y", follower.getPose().getX() + ", " + follower.getPose().getY());
         });
         //this is a test path. Replace it with your team's logic
         follower.followPath(new Path(new BezierLine(new Pose(0, 0), new Pose(10, 0))));
-        //this turns control over to Blaze. The 0 tells blaze to use Neutrino, not a different rust opmode.
-        //If you wrote other rust opmodes, you would start them instead by passing in a different number.
-        //You absolutely have to call this some time after waitForStart
         runBlazeFTC(0);
 
         //This should be replaced with your own code. 
@@ -99,13 +69,86 @@ public class ExamplePedroSpeedLocalization extends DummyPlugOpMode {
                 i.clearBulkCache();
             //it doesn't matter what you do here
             sleep(20);
-            tele.addData("main loop time (ms)", elt2.milliseconds());
+            telemetry.addData("main loop time (ms)", elt2.milliseconds());
             elt2.reset();
-            tele.update();
+            telemetry.update();
         }
     }
 }
 ```
+
+OpMode version:
+
+```java
+public class BlazeOpMode extends OpMode {
+    boolean motorInPlace = false;
+    int target = 500;
+    Follower follower = null;
+    Path pathToFollow;
+    @Override
+    public void init() {
+        BlazeDummyPlug.initializeBlazeFTC(hardwareMap);
+        BlazeDummyPlug.engageMotorAccel(hardwareMap);
+        follower = Constants.create(hardwareMap);
+        DcMotor motor = hardwareMap.get(DcMotor.class, "motor");
+        //do whatever else init stuff you need to here
+        ElapsedTime elt = new ElapsedTime(ElapsedTime.Resolution.MILLISECONDS);
+        Pedro3SingleDataLocalizer.setup(follower, () -> {
+            telemetry.addData("pedro loop time (ms)", elt.milliseconds());
+            elt.reset();
+            telemetry.addData(
+                    "x,y",
+                    follower.pose().x() + ", " + follower.pose().y()
+            );
+            if (follower.currentPath() != pathToFollow) {
+                follower.follow(pathToFollow);
+            }
+        });
+
+        ElapsedTime elt2 = new ElapsedTime(ElapsedTime.Resolution.MILLISECONDS);
+        BlazeDummyPlug.engageBulkReadAcceleration(hardwareMap, Hub.ExHub, 1, () -> {
+            //Every time this function is called, you should have new encoder data available in your motors. Run PID loops here.
+            //I recommend doing it like this, report your data do not do computation here:
+            if (motor.getCurrentPosition() == target) {
+                motorInPlace = true;
+            }
+            telemetry.addData("bulk loop time (ms)", elt2.milliseconds());
+            elt2.reset();
+            return null;
+        });
+    }
+
+    @Override
+    public void start() {
+        BlazeFTC.run(0);
+    }
+
+    @Override
+    public void loop() {
+        telemetry.update();
+        //do what you like here. Personally I'd use a command library. but as a trivial example:
+        if (motorInPlace) {
+            pathToFollow = line(new Pose(0.0, 0.0), new Pose(10.0, 10.0));
+            if (follower.currentPath() != null && follower.atParametricEnd()) {
+                telemetry.addData("done", true);
+            }
+        }
+    }
+
+    @Override
+    public void stop() {
+        BlazeDummyPlug.closeBlazeFTC();
+    }
+}
+```
+
+### What do these methods do?
+1. `initializeBlazeFTC()` does a few things. It loads the native Blaze code if needed, and takes over hardware control. It must always be called first. If you pass a Telemetry to it, it returns a Telemetry you should use. The old telemetry will be managed by Blaze so any Rust code can drivetrain telemetry. You should not use this feature, do not pass a telemetry.
+2. `engageMotorAcceleration()` replaces the Motors in the hardwareMap with ones that feed back to Blaze instead, skipping the sdk hardware stack. Call it before calling Constants.createFollower, hardwareMap.get(), or similar. 
+3. `PedroSingleDataLocalizer` (and its counterpart, `Pedro3SingleDataLocalizer`) isn't too complicated. Once (not before) you call `runBlazeFTC(0)`, that closure will be called every couple milliseconds when Blaze has new data for you. follower.update() is already called and shouldn't be called anywhere else. Thread safety is up in the air, so my official suggestion is to not call anything that changes the follower from outside the closure. Reads are probably fine, but I'd avoid, say, accidentally changing the target path while drive powers are actively being calculated.
+4. `engageBulkReadAcceleration(hub, packets, {})` is similar. Pass the hub you want, obviously. "Packets" is the number of read packets sent at first, and then we just send another every time we get a response. Every packet takes about 2 ms to come back, so you get 500 hz from packets = 1, and almost 1000 hz from packets = 2. Don't go higher than that. When the closure is called the data should be in your motors, so you write code like normal.
+5. `runBlazeFTC(0)` orders the native side to actually begin running. Only call it after `waitForStart()` (or equivalent). The 0 specifies that you're running the Neutrino OpMode in Blaze, if you wrote your own Rust code you might pass a different number.
+6. `closeBlazeFTC()` tells Blaze to stop. It must be called or the robot will restart (will fix this eventually). The DummyPlugOpMode actually exists entirely to wrap your code in a try-finally block to ensure it gets called.
 
 ### Lower Level Usage
 Lower level usage lets you extend whatever class you want, but it requires calling some functions more directly, and also there are footguns to be aware of.
@@ -115,7 +158,7 @@ The DummyPlugOpMode class below should be used as a template. Call the BlazeFTC 
 The most important thing, however, is that you call `BlazeDummyPlug.closeBlazeFTC()` after the opmode is done. 
 To make sure it's called, do it in a `finally` block wrapping normal user code. 
 Failing to call this may force you to restart the robot should you want to start a new opmode.
-```java
+```kotlin
 abstract class DummyPlugOpMode : LinearOpMode() {
     fun sendPropertyToRust(key: String, value: String) {
         BlazeFTC.sendProperty(key, value);
@@ -125,6 +168,17 @@ abstract class DummyPlugOpMode : LinearOpMode() {
     }
     fun engagePinpointAcceleration(ppd: GoBildaPinpointDriver, acceptor: (PositionData) -> Unit) {
         BlazeDummyPlug.engagePinpointAcceleration(ppd, acceptor)
+    }
+    fun engageBulkReadAcceleration(ctrlHub: Hub, numberPackets: Int = 1, acceptor: () -> Unit) {
+        BlazeDummyPlug.engageBulkReadAcceleration(hardwareMap, ctrlHub, numberPackets, acceptor)
+    }
+    @Deprecated(message = "Not \"deprecated\" per se but should not be called")
+    fun engageBulkReadAccelerationAtFrequency(ctrlHub: Hub, frequency: Int, acceptor: () -> Unit) {
+        BlazeDummyPlug.engageBulkReadAccelerationAtFrequency(hardwareMap, ctrlHub, frequency, acceptor)
+    }
+    /*this one has no telemetry, so use if my telemetry was causing problems*/
+    final fun initializeBlazeFTC() {
+        BlazeDummyPlug.initializeBlazeFTC(hardwareMap)
     }
     final fun initializeBlazeFTC(userTelemetry: Telemetry) : Telemetry =
         BlazeDummyPlug.initializeBlazeFTC(telemetry, hardwareMap)
