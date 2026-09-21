@@ -274,7 +274,7 @@ impl Robot {
     pub fn add_on_kill_handler<D>(&mut self, func: D) where D: OnKillHandler + 'static {
         self.on_kill_handlers.push(Box::new(Mutex::new(func)));
     }
-    pub fn add_i2c_device<Device: 'static, T: 'static>(&mut self, device: Box<Device>, handlers: Vec<Box<dyn I2CDeviceHandler<Device, T>>>) where Device: I2CDevice<T> {
+    pub fn add_i2c_device<Device: 'static, T: 'static, R: 'static>(&mut self, device: Box<Device>, handlers: Vec<Box<dyn I2CDeviceHandler<Device, T, R>>>) where Device: I2CDevice<T, R>, R: Into<u8>, T: From<Vec<u8>> {
         let both = I2CDevicePair { device, handlers };
         self.i2c_devices.push(Mutex::new(Box::new(both)));
     }

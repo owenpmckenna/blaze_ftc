@@ -1,3 +1,5 @@
+#![feature(associated_type_defaults)]
+
 pub mod serialization;
 pub mod threads;
 pub mod sdk_proxy;
@@ -474,7 +476,7 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_setMotorPowers(
         [&HUB_0, &HUB_1].into_iter().for_each(move |it| {
             if let Some(it) = it.get() {
                 if it.module.module_addr == module as u8 {
-                    it.send_motor_commands([power0 as f32, power1 as f32, power2 as f32, power3 as f32]);
+                    it.send_motor_commands([power0, power1, power2, power3]);
                 }
             }
         });

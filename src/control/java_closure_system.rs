@@ -1,6 +1,6 @@
 use crate::control::robot::{BulkReadHandler, Robot};
 use crate::serialization::i2c_comms::i2c_device::I2CDeviceHandler;
-use crate::serialization::i2c_comms::pinpoint_i2c::{PinpointI2C, PinpointSnapshot};
+use crate::serialization::i2c_comms::pinpoint_i2c::{PinpointI2C, PinpointRegister, PinpointSnapshot};
 use crate::{catch, get_servo_hubs_init_data, BLAZEFTC_CLASS, JAVA_VM, HUB_1};
 use crossbeam_channel::{select, unbounded, Receiver, Sender, TryRecvError};
 use jni::errors::Error;
@@ -25,7 +25,7 @@ pub struct JNICrossPinpointHandler {
     datas: usize,
     scheduled: bool,
 }
-impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot> for JNICrossPinpointHandler {
+impl I2CDeviceHandler<PinpointI2C, PinpointSnapshot, PinpointRegister> for JNICrossPinpointHandler {
     fn handle(&mut self, _: &Robot, device: &mut Box<PinpointI2C>, data: &PinpointSnapshot) {
         if self.datas < 5 {
             log::info!("got a pinpoint data! {}", self.datas)

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
-use num_enum::TryFromPrimitive;
+use num_enum::{IntoPrimitive, TryFromPrimitive};
 use crate::control::hardware::{Direction, LynxHub};
 use crate::serialization::command::Command;
 use crate::serialization::i2c_comms::i2c_device::{I2CDevice, I2CDeviceResult, ToLeBytes};
@@ -24,49 +24,13 @@ pub struct PinpointI2C {
     packets_in_flight: Arc<Mutex<Vec<u8>>>,
     pub mistake_alert_sender: Option<Sender<Instant>>
 }
-impl PinpointI2C {
-    fn write_register<T>(&self, register: PinpointRegister, number: T) -> &Self where T: ToLeBytes + Debug {
-        log::trace!("writing pinpoint register {:?} with {:?}", register, number);
-        self.write_data(register as u8, &number.to_le_bytes_vec())
+impl I2CDevice<PinpointSnapshot, PinpointRegister> for PinpointI2C {
+    fn get_location(&self) -> (&'static LynxHub, u8, u8) {
+        (self.hub, self.bus, self.i2c_addr)
     }
-    fn write_data(&self, register: u8, data: &[u8]) -> &Self {
-        thread::sleep(Duration::from_millis(6));
-        log::trace!("writing pinpoint data: bus{} addr{} reg{} dat{:?}", self.bus, self.i2c_addr, register, data);
-        Self::write_data_i(self.hub, self.bus, self.i2c_addr, register, data);
-        thread::sleep(Duration::from_millis(6));//wait so the command will go through. this is a kludge
-        self
-    }
-}
-impl I2CDevice<PinpointSnapshot> for PinpointI2C {
-    fn try_interpret_response(&mut self, packet: Packet) -> I2CDeviceResult<PinpointSnapshot> {
-        log::trace!("trying to interpret pinpoint data... from packet rn{} {:?}", packet.reference_number, packet);
-        if self.is_pif(packet.reference_number) {
-            if let Command::LynxCommand(cmd) = &packet.payload_data {
-                log::trace!("got pinpoint PIF {} w/ data", packet.reference_number);
-                if let LynxCommand::LynxI2CReadStatusQueryResponse(resp) = &cmd.command {
-                    let data = PinpointSnapshot::new(&resp.data);
-                    log::trace!("pinpoint packet {} was data! {:?}", packet.reference_number, data);
-                    return I2CDeviceResult::Data(data);
-                }
-            } else if let Command::Nack(reason) = &packet.payload_data {
-                log::trace!("got pinpoint PIF {} w/ NACK", packet.reference_number);
-                //i2c writing not done (fire_read failed). consume and send another packet
-                //remind scheduler to not send any packets for the next couple millis.
-                if let Some(channel) = &self.mistake_alert_sender {
-                    log::trace!("Got Pinpoint NACK, warning scheduler to slow down.");
-                    let _ = channel.send(Instant::now().add(Duration::from_millis(3)));
-                }
-                self.fire_read();
-                return I2CDeviceResult::Nack(reason.to_string())
-            } else if let Command::Ack(_) = &packet.payload_data {
-                log::trace!("got pinpoint PIF {} w/ ACK", packet.reference_number);
-                //i2c writing done (fire_bulk_read succeeded). consume and send another packet
-                self.fire_read();
-                return I2CDeviceResult::Nack("".to_string())
-            }
-            log::trace!("got pinpoint packet that has no data and isn't a nack, seemingly. packet: {:?}", packet)
-        }
-        I2CDeviceResult::Packet(packet)
+
+    fn get_packet_utils(&self) -> (&Arc<Mutex<Vec<u8>>>, &Option<Sender<Instant>>) {
+        (&self.packets_in_flight, &self.mistake_alert_sender)
     }
 }
 impl PinpointI2C {
@@ -79,18 +43,6 @@ impl PinpointI2C {
             packets_in_flight: Arc::new(Mutex::new(vec![])),
             mistake_alert_sender: None
         }
-    }
-    fn add_pif(&self, id: u8) {
-        log::trace!("adding pinpoint pif {}", id);
-        let mut pif = self.packets_in_flight.lock().expect("could not lock pinpoint pif list");
-        pif.push(id);
-    }
-    fn is_pif(&self, id: u8) -> bool {
-        let mut pif = self.packets_in_flight.lock().expect("could not lock pinpoint pif list 0");
-        if let Some(index) = pif.iter().position(|&x| x == id) {
-            pif.remove(index);
-            true
-        } else { false }
     }
     fn get_2nd_delay() -> Option<u64> {
         match get_prop("pinpoint2ndDelay") {
@@ -146,11 +98,6 @@ impl PinpointI2C {
         } else {
             schedule_packet(Instant::now().add(Duration::from_micros(schedule_time)), pack, self.hub);
         }
-    }
-    pub(crate) fn fire_read(&self) {
-        log::trace!("firing pinpoint read req");
-        let cmd = LynxCommand::LynxI2CReadStatusQueryCommand(LynxI2CReadStatusQueryCommandData {i2c_bus: self.bus});
-        self.add_pif(self.hub.send_lynx_packet(cmd));
     }
 
     pub fn set_pod_offsets(&self, xoffset: f32, yoffset: f32) -> &Self {
@@ -213,7 +160,7 @@ pub struct PinpointSnapshot {
 }
 impl PinpointSnapshot {
     const MM_TO_IN: f32 = 1f32/25.4f32;
-    fn new(data: &Vec<u8>) -> PinpointSnapshot {
+    fn new(data: &[u8]) -> PinpointSnapshot {
         let device_status = i32::from_le_bytes(data[0..4].try_into().unwrap());
         let loop_time = i32::from_le_bytes(data[4..8].try_into().unwrap());
         let x_encoder_position = i32::from_le_bytes(data[8..12].try_into().unwrap());
@@ -259,9 +206,14 @@ impl Into<Vec<u8>> for PinpointSnapshot {
         self.to_bytes()
     }
 }
+impl From<Vec<u8>> for PinpointSnapshot {
+    fn from(value: Vec<u8>) -> Self {
+        Self::new(&value)
+    }
+}
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
-enum PinpointRegister {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, TryFromPrimitive, IntoPrimitive)]
+pub enum PinpointRegister {
     DeviceId = 1,
     DeviceVersion = 2,
     DeviceStatus = 3,

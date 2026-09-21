@@ -228,19 +228,24 @@ impl LynxHub {
         //let packet = Packet::new(lynx_command.to_command(&self.module), self.module.module_addr, 0);
         //self.send_packet(packet);
     }
-    pub fn send_motor_commands(&'static self, mut power: [f32; 4]) -> Option<()> {
-        let mut out_power = [0i16; 4];
+    pub fn send_motor_commands(&'static self, mut power: [f64; 4]) -> Option<()> {
+        let mut out_power = [None; 4];
         for i in 0..4 {
-            power[i] = self.get_motor_direction(i).mult() * power[i].clamp(-1.0, 1.0);
-            out_power[i] = (power[i] * (i16::MAX as f32)) as i16;
+            if power[i].is_normal() {
+                power[i] = self.get_motor_direction(i).mult() as f64 * power[i].clamp(-1.0, 1.0);
+                out_power[i] = Some((power[i] * (i16::MAX as f64)) as i16);
+            }
         }
-        self.send_motor_commands_i16(out_power)
+        self.send_motor_commands_i16(&out_power)
     }
-    pub fn send_motor_commands_i16(&'static self, power: [i16; 4]) -> Option<()> {
+    pub fn send_motor_commands_i16(&'static self, power: &[Option<i16>]) -> Option<()> {
         let packets: Vec<crate::serialization::lynx_commands::base_lynx_command::LynxCommand> = power.into_iter().enumerate().filter_map(|(i, power)| {
+            let power = if let Some(it) = power {*it} else {
+                return None;
+            };
             if (self.last_motor_powers[i].load(Ordering::SeqCst) - power).abs() <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
                 if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
-                    return None; //don't need to send this it's literally the same value!
+                    return None; //don't need to send this it's the same value!
                 }
             }
             self.last_motor_powers[i].store(power, Ordering::SeqCst);
