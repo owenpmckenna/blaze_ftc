@@ -103,6 +103,7 @@ public class BlazeOpMode extends OpMode {
             if (follower.currentPath() != pathToFollow) {
                 follower.follow(pathToFollow);
             }
+            follower.update();
         });
 
         ElapsedTime elt2 = new ElapsedTime(ElapsedTime.Resolution.MILLISECONDS);

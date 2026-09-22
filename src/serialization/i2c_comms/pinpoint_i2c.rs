@@ -32,6 +32,10 @@ impl I2CDevice<PinpointSnapshot, PinpointRegister> for PinpointI2C {
     fn get_packet_utils(&self) -> (&Arc<Mutex<Vec<u8>>>, &Option<Sender<Instant>>) {
         (&self.packets_in_flight, &self.mistake_alert_sender)
     }
+
+    fn get_read_mode(&self) -> u8 {
+        0
+    }
 }
 impl PinpointI2C {
     const IN_TO_MM: f32 = 25.4;
@@ -206,8 +210,8 @@ impl Into<Vec<u8>> for PinpointSnapshot {
         self.to_bytes()
     }
 }
-impl From<Vec<u8>> for PinpointSnapshot {
-    fn from(value: Vec<u8>) -> Self {
+impl From<(u8, Vec<u8>)> for PinpointSnapshot {
+    fn from((_, value): (u8, Vec<u8>)) -> Self {
         Self::new(&value)
     }
 }

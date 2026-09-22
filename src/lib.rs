@@ -473,13 +473,11 @@ pub extern "system" fn Java_dev_anygeneric_blazeftc_BlazeFTC_setMotorPowers(
     _env: EnvUnowned, _class: JClass, module: jint, power0: jdouble, power1: jdouble, power2: jdouble, power3: jdouble
 ) {
     catch(|| {
-        [&HUB_0, &HUB_1].into_iter().for_each(move |it| {
-            if let Some(it) = it.get() {
-                if it.module.module_addr == module as u8 {
-                    it.send_motor_commands([power0, power1, power2, power3]);
-                }
-            }
-        });
+        if module == 0 {
+            HUB_0.get().unwrap().send_motor_commands([power0, power1, power2, power3])
+        } else {
+            HUB_1.get().unwrap().send_motor_commands([power0, power1, power2, power3])
+        }
         //log::info!("No module found! m{} p{} pow{}", module, port, power)
     }, "set motor powers from java");
 }

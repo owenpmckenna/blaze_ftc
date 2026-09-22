@@ -13,6 +13,7 @@ use std::time::Duration;
 use jni::sys::{jbyte, jsize};
 use crate::control::hardware::LynxHub;
 use crate::serialization::command_data::CommandData;
+use crate::serialization::i2c_comms::octoquad_i2c::{OctoQuadI2C, OctoQuadRegisters, OctoQuadSnapshot, ReadMode};
 use crate::serialization::lynx_commands::base_lynx_command::LynxCommand::LynxGetBulkDataCommand;
 use crate::serialization::lynx_commands::lynx_commands::{LynxGetBulkDataCommandData, LynxGetBulkDataResponseData};
 use crate::telemetry::telemetry::{get_allowed_to_send_dangerous_packets, get_class_loader, load_class};
@@ -91,6 +92,83 @@ impl JNICrossPinpointHandler {
         robot.add_kill_signal_sender(kill_tx);
         spawn_java_thread(name, resend_tx, snapshot_rx, kill_rx);
         JNICrossPinpointHandler { snapshot_tx, resend_rx, sending: true, datas: 0, scheduled }
+    }
+}
+
+
+pub struct JNICrossOctoQuadHandler {
+    snapshot_tx: Sender<OctoQuadSnapshot>,
+    resend_rx: Receiver<bool>,
+    sending: bool,
+    datas: usize,
+    scheduled: bool,
+}
+impl I2CDeviceHandler<OctoQuadI2C, OctoQuadSnapshot, OctoQuadRegisters> for JNICrossOctoQuadHandler {
+    fn handle(&mut self, _: &Robot, device: &mut Box<OctoQuadI2C>, data: &OctoQuadSnapshot) {
+        if self.datas < 5 {
+            log::info!("got a pinpoint data! {}", self.datas)
+        }
+        handle_keep_sending(&self.resend_rx, &mut self.sending);
+        if self.sending && !self.scheduled {
+            device.fire_bulk_read_request();
+        }
+        if let Err(it) =  self.snapshot_tx.send((*data).clone()) {
+            log::info!("snapshot tx null!!! ignoring... {}", it);
+            self.sending = false;
+        }
+        self.datas += 1;
+    }
+    //o=outer, i=inner
+}
+impl JNICrossOctoQuadHandler {
+    pub fn put_on_robot(robot: &mut Robot, orders: &mut Vec<Order>) -> Option<()> {
+        log::info!("running jni put on robot: {:?}, {:?}, {:?}, {:?}, {:?}",
+            robot.get_property("internalOctoquadHub"),
+            robot.get_property("internalOctoquadBus"),
+            robot.get_property("internalOctoquadCallbackName"),
+            robot.get_property("internalOctoquadUpdateFreq"),
+            robot.get_property("internalOctoquadReadMode")
+        );
+        let hub = if robot.get_property("internalOctoquadHub")?.eq_ignore_ascii_case("hub0") {
+            robot.hub_0
+        } else { robot.hub_1? };
+
+        log::info!("abt to get pinpoint bus id");
+        let mut octoquad = if let Ok(bus_id) = robot.get_property("internalOctoquadBus")?.parse::<u8>() {
+            //0 <= bus_id <= 4, I think
+            //i2c addr is hardcoded
+            OctoQuadI2C::new(hub, bus_id, 0x30, ReadMode(robot.get_property("internalOctoquadReadMode")?.parse::<u8>().ok()?))
+        } else {return None;};
+
+        let (order_m_tx, order_m_rx) = unbounded();
+        let sch = if let Some(freq) = robot.get_property("internalOctoquadUpdateFreq")
+            && hub.is_over_rs.is_none() {
+            let micros: u64 = freq.parse().unwrap_or(10_000);//10 ms default
+            let func = octoquad.fire_bulk_read_req_func();
+            let order = Order::new(Duration::ZERO, Duration::from_micros(micros), func)
+                .set_pause_receiver(order_m_rx);
+            octoquad.mistake_alert_sender = Some(order_m_tx);
+            orders.push(order);
+            true
+        } else {
+            log::info!("firing pinpoint!");
+            octoquad.fire_bulk_read_request();
+            false
+        };
+
+        let cb_name = robot.get_property("internalOctoquadCallbackName")?;
+        let handler = Self::new(cb_name, robot, sch);
+        robot.add_i2c_device(Box::new(octoquad), vec![Box::new(handler)]);
+        Some(())
+    }
+    fn new(name: String, robot: &mut Robot, scheduled: bool) -> Self {
+        log::info!("creating new jni cross handler!");
+        let (snapshot_tx, snapshot_rx) = unbounded();
+        let (resend_tx, resend_rx) = unbounded();
+        let (kill_tx, kill_rx) = unbounded();
+        robot.add_kill_signal_sender(kill_tx);
+        spawn_java_thread(name, resend_tx, snapshot_rx, kill_rx);
+        Self { snapshot_tx, resend_rx, sending: true, datas: 0, scheduled }
     }
 }
 

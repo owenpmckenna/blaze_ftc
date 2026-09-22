@@ -18,10 +18,11 @@ pub enum I2CDeviceResult<T> {
     Nack(String),
     Packet(Packet)
 }
-pub trait I2CDevice<T, R> : Send + Sync + UnwindSafe + RefUnwindSafe where R: Into<u8>, T: From<Vec<u8>> {
+pub trait I2CDevice<T, R> : Send + Sync + UnwindSafe + RefUnwindSafe where R: Into<u8>, T: From<(u8, Vec<u8>)> {
     //fn try_interpret_response(&mut self, packet: Packet) -> I2CDeviceResult<T>;
     ///hub, bus, i2c addr
     fn get_location(&self) -> (&'static LynxHub, u8, u8);
+    fn get_read_mode(&self) -> u8;
     fn write_data_i(lynx_hub: &'static LynxHub, i2c_bus: u8, i2c_addr_7bit: u8, register: u8, data: &[u8]) {
         let mut payload = vec![register; data.len() + 1];
         payload[1..].copy_from_slice(data);
@@ -75,7 +76,8 @@ pub trait I2CDevice<T, R> : Send + Sync + UnwindSafe + RefUnwindSafe where R: In
                     let resp = if let Command::LynxCommand(it) = packet.payload_data && let LynxCommand::LynxI2CReadStatusQueryResponse(it) = it.command {
                         it
                     } else {panic!("wierdness has happened")};
-                    let data = T::from(resp.data);
+                    let mode = self.get_read_mode();
+                    let data = T::from((mode, resp.data));
                     //log::trace!("i2c packet {} was data! {:?}", packet.reference_number, data);
                     return I2CDeviceResult::Data(data);
                 }
@@ -107,17 +109,17 @@ pub trait I2CDevice<T, R> : Send + Sync + UnwindSafe + RefUnwindSafe where R: In
         self.add_pif(hub.send_lynx_packet(cmd));
     }
 }
-pub trait I2CDeviceHandler<Device, T, R>: Send + Sync + UnwindSafe + RefUnwindSafe where Device: I2CDevice<T, R>, R: Into<u8>, T: From<Vec<u8>> {
+pub trait I2CDeviceHandler<Device, T, R>: Send + Sync + UnwindSafe + RefUnwindSafe where Device: I2CDevice<T, R>, R: Into<u8>, T: From<(u8, Vec<u8>)> {
     fn handle(&mut self, robot: &Robot, device: &mut Box<Device>, data: &T);
 }
-pub(crate) struct I2CDevicePair<Device, T, R> where Device: I2CDevice<T, R>, R: Into<u8>, T: From<Vec<u8>> {
+pub(crate) struct I2CDevicePair<Device, T, R> where Device: I2CDevice<T, R>, R: Into<u8>, T: From<(u8, Vec<u8>)> {
     pub(crate) device: Box<Device>,
     pub(crate) handlers: Vec<Box<dyn I2CDeviceHandler<Device, T, R>>>
 }
 pub(crate) trait I2CConsumer: Send + Sync + UnwindSafe + RefUnwindSafe {
     fn maybe_consume_packet(&mut self, robot: &Robot, packet: Packet) -> Option<Packet>;
 }
-impl<Device, T, R> I2CConsumer for I2CDevicePair<Device, T, R> where Device: I2CDevice<T, R>, R: Into<u8>, T: From<Vec<u8>> {
+impl<Device, T, R> I2CConsumer for I2CDevicePair<Device, T, R> where Device: I2CDevice<T, R>, R: Into<u8>, T: From<(u8, Vec<u8>)> {
     fn maybe_consume_packet(&mut self, robot: &Robot, packet: Packet) -> Option<Packet> {
         match self.device.try_interpret_response(packet) {
             I2CDeviceResult::Data(it) => {
