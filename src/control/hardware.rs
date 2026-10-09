@@ -220,7 +220,9 @@ impl LynxHub {
         let old_power = self.last_motor_powers[motor as usize].load(Ordering::SeqCst);
         if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
             if old_power.abs_diff(power as i32) <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
-                return; //don't need to send this it's literally the same value!
+                if !(power == 0 && old_power != 0) {
+                    return; //don't need to send this it's literally the same value!
+                }
             }
         }
         self.last_motor_powers[motor as usize].store(power as i32, Ordering::SeqCst);
@@ -232,7 +234,7 @@ impl LynxHub {
     pub fn send_motor_commands(&'static self, mut power: [f64; 4]) -> Option<()> {
         let mut out_power = [None; 4];
         for i in 0..4 {
-            if power[i].is_normal() {
+            if power[i].is_finite() {
                 power[i] = self.get_motor_direction(i).mult() as f64 * power[i].clamp(-1.0, 1.0);
                 out_power[i] = Some((power[i] * (i16::MAX as f64)) as i16);
             }
@@ -244,8 +246,10 @@ impl LynxHub {
             let power = if let Some(it) = power {*it} else {
                 return None;
             };
-            if self.last_motor_powers[i].load(Ordering::SeqCst).abs_diff(power as i32) <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
-                if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
+            let last_power = self.last_motor_powers[i].load(Ordering::SeqCst);
+            if last_power.abs_diff(power as i32) <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
+                //always actually pass on 0 values to shut motors off. this is very important.
+                if !(power == 0 && last_power != 0) && DO_MOTOR_CACHING.load(Ordering::SeqCst) {
                     return None; //don't need to send this it's the same value!
                 }
             }
