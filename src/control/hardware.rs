@@ -1,5 +1,5 @@
 use std::cmp::PartialEq;
-use std::sync::atomic::{AtomicBool, AtomicI16, AtomicPtr, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI16, AtomicI32, AtomicPtr, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use atomptr::AtomPtr;
@@ -22,12 +22,12 @@ use crate::serialization::command::Command;
 ///this should be on by default, it represents whether we do motor power caching or not.
 /// it should only be turned off for debugging purposes, where you want to test worst-case timing
 pub static DO_MOTOR_CACHING: AtomicBool = AtomicBool::new(true);
-pub static MOTOR_CACHING_THRESHOLD: AtomicI16 = AtomicI16::new(50);
+pub static MOTOR_CACHING_THRESHOLD: AtomicU32 = AtomicU32::new(50);
 type Data = LynxGetBulkDataResponseData;
 #[derive(Debug)]
 pub struct LynxHub {
     pub module: Module,
-    last_motor_powers: [AtomicI16; 4],
+    last_motor_powers: [AtomicI32; 4],
     ///true = forward
     motor_directions: [AtomicBool; 4],
     motor_zero_power_behaviors: [AtomicU8; 4],
@@ -65,7 +65,7 @@ impl LynxHub {
         bd.0.send(()).unwrap();
         LynxHub {
             module,
-            last_motor_powers: [AtomicI16::new(0), AtomicI16::new(0), AtomicI16::new(0), AtomicI16::new(0)],
+            last_motor_powers: [AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(0)],
             motor_directions: [AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(true), AtomicBool::new(true)],
             sender: out,
             sdk_proxy,
@@ -217,12 +217,13 @@ impl LynxHub {
         self.send_motor_command_i16(motor, calculated);
     }
     pub fn send_motor_command_i16(&'static self, motor: u8, power: i16) {
-        if (self.last_motor_powers[motor as usize].load(Ordering::SeqCst) - power).abs() <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
-            if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
+        let old_power = self.last_motor_powers[motor as usize].load(Ordering::SeqCst);
+        if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
+            if old_power.abs_diff(power as i32) <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
                 return; //don't need to send this it's literally the same value!
             }
         }
-        self.last_motor_powers[motor as usize].store(power, Ordering::SeqCst);
+        self.last_motor_powers[motor as usize].store(power as i32, Ordering::SeqCst);
         let lynx_command = LynxSetMotorPowerCommand(LynxSetMotorPowerCommandData { motor, power});
         self.send_lynx_packet(lynx_command);
         //let packet = Packet::new(lynx_command.to_command(&self.module), self.module.module_addr, 0);
@@ -243,12 +244,12 @@ impl LynxHub {
             let power = if let Some(it) = power {*it} else {
                 return None;
             };
-            if (self.last_motor_powers[i].load(Ordering::SeqCst) - power).abs() <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
+            if self.last_motor_powers[i].load(Ordering::SeqCst).abs_diff(power as i32) <= MOTOR_CACHING_THRESHOLD.load(Ordering::SeqCst) {
                 if DO_MOTOR_CACHING.load(Ordering::SeqCst) {
                     return None; //don't need to send this it's the same value!
                 }
             }
-            self.last_motor_powers[i].store(power, Ordering::SeqCst);
+            self.last_motor_powers[i].store(power as i32, Ordering::SeqCst);
             Some(LynxSetMotorPowerCommand(LynxSetMotorPowerCommandData { motor: i as u8, power }))
         }).collect();
         if packets.len() == 0 {
