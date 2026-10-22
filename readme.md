@@ -37,8 +37,8 @@ If you can confirm or refute any of this data in practical conditions let me kno
 ### Normal Usage
 First, add `maven { url = 'https://maven.anygeneric.dev/' }` to the `repositories` block at the top of your build.dependencies.gradle.
 
-Next, add `implementation "dev.anygeneric:blazeftc:0.1.62"` and to your dependencies. 
-You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.62'` if you're using the Pedro 2 integration. `implementation 'dev.anygeneric:blazeftc_pedro3:0.1.62'` has Pedro 3 integration.
+Next, add `implementation "dev.anygeneric:blazeftc:0.1.66"` and to your dependencies. 
+You will also need `implementation 'dev.anygeneric:blazeftc_pedro:0.1.66'` if you're using the Pedro 2 integration. `implementation 'dev.anygeneric:blazeftc_pedro3:0.1.66'` has Pedro 3 integration.
 If you are familiar with Roadrunner or any other pathing library, ping me @anygenericname and I'll get you a dependency (or help you make your own) in like 15 minutes max (it's very easy), or look at how the Pedro 2 version is implemented.
 
 Next, add one of the following classes to your project. The DummyPlugOpMode class extends LinearOpMode, or if you'd rather use OpMode use the second example.
